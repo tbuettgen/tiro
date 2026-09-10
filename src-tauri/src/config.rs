@@ -62,6 +62,17 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Default `panel_transparency` (0 solid … 100 most see-through). Over the
+/// native glass backdrop on macOS the surface can afford to be more
+/// see-through; elsewhere the tint is all there is.
+pub const DEFAULT_TRANSPARENCY: &str = if cfg!(target_os = "macos") {
+    "70"
+} else {
+    "45"
+};
+/// `DEFAULT_TRANSPARENCY` as the number the panel API clamps against.
+pub const DEFAULT_TRANSPARENCY_INT: i64 = if cfg!(target_os = "macos") { 70 } else { 45 };
+
 /// The original's `DEFAULTS["general"]`, in the same order.
 pub fn defaults(app_dir: &Path) -> Vec<(&'static str, String)> {
     let vault = home_dir().join("Documents").join("Tiro");
@@ -97,7 +108,20 @@ pub fn defaults(app_dir: &Path) -> Vec<(&'static str, String)> {
         ("clipboard_cleanup", "light".into()),
         ("use_vocab_bias", "true".into()),
         ("theme", "system".into()),
-        ("panel_transparency", "45".into()),
+        ("panel_transparency", DEFAULT_TRANSPARENCY.into()),
+        // macOS: native glass backdrop under the panel (Settings ->
+        // Appearance -> Liquid Glass). Stored but inert elsewhere.
+        (
+            "liquid_glass",
+            if cfg!(target_os = "macos") {
+                "true"
+            } else {
+                "false"
+            }
+            .into(),
+        ),
+        // First-run setup guide: false until the user finishes or skips it.
+        ("setup_done", "false".into()),
         ("vault_dir", vault.to_string_lossy().into_owned()),
         ("fallback_dir", fallback.to_string_lossy().into_owned()),
         ("save_transcripts", "true".into()),
@@ -147,6 +171,21 @@ impl ConfigStore {
                             Some(SECTION),
                             "panel_hotkey".to_string(),
                             "ctrl+alt+c".to_string(),
+                        );
+                        changed = true;
+                    }
+                    // ONE-TIME migration to the native glass backdrop on
+                    // macOS: a file from before `liquid_glass` existed
+                    // carries a transparency tuned for the flat tint, so it
+                    // moves to the glass default once. The backfill below
+                    // adds the key, so this can never fire again.
+                    if cfg!(target_os = "macos")
+                        && ini.get_from(Some(SECTION), "liquid_glass").is_none()
+                    {
+                        ini.set_to(
+                            Some(SECTION),
+                            "panel_transparency".to_string(),
+                            DEFAULT_TRANSPARENCY.to_string(),
                         );
                         changed = true;
                     }
@@ -264,6 +303,27 @@ mod tests {
     }
 
     #[test]
+    fn pre_glass_config_moves_transparency_to_the_glass_default_once() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.ini");
+        std::fs::write(&path, "[general]\npanel_transparency = 0\ntheme = dark\n").unwrap();
+        let cfg = load_in(&dir);
+        if cfg!(target_os = "macos") {
+            assert_eq!(cfg.get("panel_transparency"), DEFAULT_TRANSPARENCY);
+            assert_eq!(cfg.get("liquid_glass"), "true");
+        } else {
+            assert_eq!(cfg.get("panel_transparency"), "0");
+            assert_eq!(cfg.get("liquid_glass"), "false");
+        }
+        assert_eq!(cfg.get("theme"), "dark", "unrelated keys untouched");
+        // The key is now present, so a user's later choice survives reloads.
+        let mut cfg = cfg;
+        cfg.set("panel_transparency", "0");
+        let again = load_in(&dir);
+        assert_eq!(again.get("panel_transparency"), "0");
+    }
+
+    #[test]
     fn first_run_writes_defaults() {
         let dir = TempDir::new().unwrap();
         let cfg = load_in(&dir);
@@ -283,7 +343,8 @@ mod tests {
         assert_eq!(cfg.get("sound_volume"), "1.0");
         assert_eq!(cfg.get("clipboard_cleanup"), "light");
         assert_eq!(cfg.get("theme"), "system");
-        assert_eq!(cfg.get("panel_transparency"), "45");
+        assert_eq!(cfg.get("panel_transparency"), DEFAULT_TRANSPARENCY);
+        assert_eq!(cfg.get("setup_done"), "false");
         assert_eq!(cfg.get("pill_position"), "bottom");
         assert_eq!(cfg.get("pill_padding"), "110");
         assert_eq!(

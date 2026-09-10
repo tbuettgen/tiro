@@ -435,7 +435,16 @@ pub fn get_state(app: &AppHandle) -> Value {
             "launchAtLogin": launch_at_login_enabled(app),
             "saveTranscripts": cfg.get_bool("save_transcripts"),
             "savePath": cfg.get("vault_dir"),
-            "transparency": clamp_int_str(&cfg.get("panel_transparency"), 0, 100, 45),
+            "transparency": clamp_int_str(
+                &cfg.get("panel_transparency"),
+                0,
+                100,
+                crate::config::DEFAULT_TRANSPARENCY_INT,
+            ),
+            // macOS only: native glass backdrop under the panel (glass.rs).
+            "liquidGlass": cfg.get_bool("liquid_glass"),
+            // first-run setup guide; the panel opens it while this is false
+            "setupDone": cfg.get_bool("setup_done"),
             "storageFallback": !is_vault,
             "storagePath": store_path,
             "treatAsDesktop": cfg.get_bool("treat_as_desktop"),
@@ -476,6 +485,9 @@ pub fn get_state(app: &AppHandle) -> Value {
         "shortcuts": shortcuts,
         "theme": theme,
         "effectiveTheme": effective,
+        // "macos" | "windows" | "linux": the panel keeps platform copy
+        // (menu bar vs tray, permission prompts) out of guesswork
+        "platform": std::env::consts::OS,
     })
 }
 
@@ -647,6 +659,7 @@ fn hot_apply_model_change(app: &AppHandle) {
 pub fn set_setting(app: &AppHandle, key: &str, value: &Value) -> Value {
     let ctx = app.state::<AppCtx>();
     let mut theme_changed = false;
+    let mut glass_changed = false;
     let mut pill_moved = false;
     let mut engine_reresolve = false;
     let mut gpu_pick: Option<usize> = None;
@@ -734,9 +747,16 @@ pub fn set_setting(app: &AppHandle, key: &str, value: &Value) -> Value {
             "transparency" => {
                 cfg.set(
                     "panel_transparency",
-                    &clamp_int(value, 0, 100, 45).to_string(),
+                    &clamp_int(value, 0, 100, crate::config::DEFAULT_TRANSPARENCY_INT).to_string(),
                 );
             }
+            // Native glass backdrop toggle (macOS); applied live below,
+            // after the cfg lock is released.
+            "liquidGlass" => {
+                cfg.set("liquid_glass", if truthy(value) { "true" } else { "false" });
+                glass_changed = true;
+            }
+            "setupDone" => cfg.set("setup_done", if truthy(value) { "true" } else { "false" }),
             "launchAtLogin" => set_launch_at_login(app, truthy(value)),
             // Desktop override: re-render is the panel's job (it derives
             // desktop = !batteryPresent || treatAsDesktop locally); the
@@ -776,6 +796,14 @@ pub fn set_setting(app: &AppHandle, key: &str, value: &Value) -> Value {
         let cfg = lock(&ctx.cfg).clone();
         flow::push_panel(app, "tiroSetTheme", json!(effective_theme(app, &cfg)));
     }
+    // The backdrop follows both switches: the theme pins its light/dark
+    // material, the Liquid Glass toggle adds or removes it.
+    #[cfg(target_os = "macos")]
+    if theme_changed || glass_changed {
+        crate::glass::sync(app);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = glass_changed;
     if let Some(idx) = gpu_pick {
         match hw::snapshot().gpus.iter().find(|g| g.index == idx) {
             Some(g) => {

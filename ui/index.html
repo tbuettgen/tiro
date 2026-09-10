@@ -6,6 +6,7 @@
 <title>Tiro</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="settings.css">
+<link rel="stylesheet" href="setup.css">
 </head>
 <body>
 
@@ -111,7 +112,7 @@
       <div class="view on" id="view-settings">
 
         <!-- ENGINE -->
-        <section class="grp">
+        <section class="grp" id="grpEngine">
           <h2 class="grp-title">Engine</h2>
           <div class="card">
             <div class="row">
@@ -155,7 +156,7 @@
         </section>
 
         <!-- AUDIO -->
-        <section class="grp">
+        <section class="grp" id="grpAudio">
           <h2 class="grp-title">Audio</h2>
           <div class="card">
             <div class="row">
@@ -173,7 +174,7 @@
         </section>
 
         <!-- CAPTURE -->
-        <section class="grp">
+        <section class="grp" id="grpCapture">
           <h2 class="grp-title">Capture</h2>
           <div class="card">
             <div class="row">
@@ -210,7 +211,7 @@
         </section>
 
         <!-- INPUT -->
-        <section class="grp">
+        <section class="grp" id="grpInput">
           <h2 class="grp-title">Input</h2>
           <div class="card">
             <div class="row">
@@ -239,14 +240,14 @@
         </section>
 
         <!-- SHORTCUTS -->
-        <section class="grp">
+        <section class="grp" id="grpShortcuts">
           <h2 class="grp-title">Shortcuts</h2>
           <div class="card" id="shortcutsCard"></div>
           <p class="grp-help">Click Edit, then press the new combination.</p>
         </section>
 
         <!-- STORAGE -->
-        <section class="grp">
+        <section class="grp" id="grpStorage">
           <h2 class="grp-title">Storage</h2>
           <div class="card">
             <div class="row">
@@ -266,7 +267,7 @@
         </section>
 
         <!-- APPEARANCE -->
-        <section class="grp">
+        <section class="grp" id="grpAppearance">
           <h2 class="grp-title">Appearance</h2>
           <div class="card">
             <div class="row">
@@ -282,16 +283,24 @@
                 <span class="rngval" id="glassVal">0.72</span>
               </span>
             </div>
+            <div class="row" id="rowGlass">
+              <div class="lbl"><div class="name">Liquid Glass</div><div class="sub">Blur the desktop behind the panel, like a system panel. Transparency sets how much shows through.</div></div>
+              <button class="sw" id="swGlass" role="switch" aria-checked="true" aria-label="Liquid Glass"></button>
+            </div>
           </div>
         </section>
 
         <!-- SYSTEM -->
-        <section class="grp">
+        <section class="grp" id="grpSystem">
           <h2 class="grp-title">System</h2>
           <div class="card">
             <div class="row">
               <div class="lbl"><div class="name">Launch at login</div></div>
               <button class="sw" id="swLogin" role="switch" aria-checked="true" aria-label="Launch at login"></button>
+            </div>
+            <div class="row">
+              <div class="lbl"><div class="name">Setup guide</div><div class="sub">Walk through shortcuts, appearance, model and microphone again.</div></div>
+              <button class="mini" id="setupAgainBtn">Open</button>
             </div>
           </div>
         </section>
@@ -350,6 +359,72 @@
 
       </div>
     </div>
+  </div>
+
+  <!-- ============ SETUP GUIDE (first run) ============ -->
+  <div class="setup" id="setup" hidden>
+    <aside class="setup-rail" id="setupRail">
+      <div class="setup-brand"><span class="wordmark">Tiro</span><span class="setup-kicker">Setup</span></div>
+      <ol class="setup-steps" id="setupSteps"></ol>
+      <button class="tbtn setup-skip" id="setupSkip">Skip for now</button>
+    </aside>
+    <section class="setup-main">
+      <div class="setup-scroll" id="setupScroll">
+
+        <div class="setup-page" data-step="welcome">
+          <h1 class="setup-title">Welcome to Tiro</h1>
+          <p class="setup-lede">Tiro turns speech into text on this machine, and nothing leaves it. Press a shortcut anywhere, talk, press it again, and the words land on your clipboard and in this panel.</p>
+          <ul class="setup-list">
+            <li class="only-mac"><b>It lives in the menu bar.</b> The Tiro icon at the top right opens this panel. Right-click it for dictation, settings and quit.</li>
+            <li class="not-mac"><b>It lives in the tray.</b> The Tiro icon opens this panel. Right-click it for dictation, settings and quit.</li>
+            <li><b>Shortcuts work in every app.</b> One starts and stops dictation; another pastes the result at the cursor.</li>
+            <li><b>Speech models download once.</b> After that Tiro works fully offline.</li>
+          </ul>
+          <p class="setup-note">This guide takes about a minute. Everything here can be changed later in Settings.</p>
+        </div>
+
+        <div class="setup-page" data-step="shortcuts">
+          <h1 class="setup-title">Shortcuts</h1>
+          <p class="setup-lede">Click Edit on a row, then press the new combination. <span class="only-mac">Option is the key shown as Alt. If you use VoiceOver, avoid Control+Option.</span></p>
+          <div class="setup-slot"></div>
+        </div>
+
+        <div class="setup-page" data-step="appearance">
+          <h1 class="setup-title">Appearance</h1>
+          <p class="setup-lede">Pick a theme and how see-through the panel is. Changes preview live on this surface.</p>
+          <div class="setup-slot"></div>
+        </div>
+
+        <div class="setup-page" data-step="engine">
+          <h1 class="setup-title">Model &amp; engine</h1>
+          <p class="setup-lede">Smaller models answer faster; larger ones hear more accurately. <span class="only-mac">On Apple silicon the GPU stays available on battery.</span></p>
+          <div class="setup-slot"></div>
+          <section class="grp">
+            <h2 class="grp-title">Models</h2>
+            <div class="card" id="setupModels"></div>
+            <p class="grp-help">The models chosen above download on first use. Grab them now to skip that wait, or keep going.</p>
+          </section>
+        </div>
+
+        <div class="setup-page" data-step="audio">
+          <h1 class="setup-title">Microphone &amp; sound</h1>
+          <p class="setup-lede">Choose the microphone Tiro listens to and test its level. <span class="only-mac">macOS asks for microphone access on the first dictation, and for Accessibility access the first time you paste at the cursor.</span></p>
+          <div class="setup-slot"></div>
+        </div>
+
+        <div class="setup-page" data-step="finish">
+          <h1 class="setup-title">You’re set</h1>
+          <p class="setup-lede">Press <span class="keys inline" id="setupKeys"></span> anywhere to start dictating.<span class="only-mac"> Close this panel and Tiro keeps running in the menu bar.</span></p>
+          <div class="setup-slot"></div>
+        </div>
+
+      </div>
+      <footer class="setup-foot">
+        <button class="mini" id="setupBack">Back</button>
+        <span class="setup-count" id="setupCount"></span>
+        <button class="mini primary" id="setupNext">Continue</button>
+      </footer>
+    </section>
   </div>
 </div>
 

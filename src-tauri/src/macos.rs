@@ -92,6 +92,43 @@ pub fn ensure_microphone_access() -> Result<(), String> {
     Err("Allow Tiro in System Settings → Privacy & Security → Microphone, then try again.".into())
 }
 
+/// Where a first-run menu bar item lands, in points from the right edge
+/// of the screen. macOS places a status item it has never seen at the far
+/// LEFT of the status area, and on a MacBook with a notch that is exactly
+/// the part that gets cut off once the bar is full — the item then exists
+/// but is never drawn. AppKit persists each item's spot as
+/// `NSStatusItem Preferred Position <autosave name>` in the app's user
+/// defaults (the user's Cmd-drag writes the same key), so seeding it once
+/// puts Tiro among the visible items next to the system controls. A
+/// later drag by the user overwrites it and is never touched again.
+const MENU_BAR_PREFERRED_POSITION: f64 = 420.0;
+
+/// Seed the menu bar item's position before the tray is built (see
+/// `MENU_BAR_PREFERRED_POSITION`). AppKit names the app's first status
+/// item `Item-0` when no autosave name is set, which is what tray-icon
+/// creates. Never overwrites an existing value.
+pub fn hint_menu_bar_position() {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+
+    let Some(cls) = AnyClass::get(c"NSUserDefaults") else {
+        return;
+    };
+    let key = NSString::from_str("NSStatusItem Preferred Position Item-0");
+    // SAFETY: plain Foundation calls on the standard defaults object with
+    // an NSString key and a double; both arguments outlive the calls.
+    unsafe {
+        let defaults: Retained<AnyObject> = msg_send![cls, standardUserDefaults];
+        let existing: Option<Retained<AnyObject>> = msg_send![&*defaults, objectForKey: &*key];
+        if existing.is_none() {
+            let _: () =
+                msg_send![&*defaults, setDouble: MENU_BAR_PREFERRED_POSITION, forKey: &*key];
+        }
+    }
+}
+
 static PASTE_GATE: Mutex<()> = Mutex::new(());
 
 /// The paste chord is Command+V on macOS. Keep physical modifiers out of
