@@ -1,0 +1,113 @@
+/* setup.css — the first-run setup guide: a full-surface overlay on the
+   panel that borrows the Settings sections for each step (they move into
+   the current page and back home when the guide closes), so every control
+   in it is the real one. Same tokens as styles.css. */
+
+.setup{
+  position:absolute; inset:0; z-index:30;
+  display:flex; border-radius:inherit; overflow:hidden;
+  animation: advIn var(--t-med) var(--ease) both;
+}
+.setup[hidden]{ display:none; }
+/* the guide owns the surface while open; the panel underneath stays laid
+   out (its controls are borrowed from there) but invisible */
+.panel.setup-open .hdr, .panel.setup-open .compact-body, .panel.setup-open .adv-body{ visibility:hidden; }
+/* the guide borrows the System section; its own "open the guide" row is
+   meaningless from inside the guide */
+.panel.setup-open #rowSetupAgain{ display:none; }
+
+/* rail */
+.setup-rail{
+  width:200px; flex:none; display:flex; flex-direction:column; gap:2px;
+  padding: var(--s-5) var(--s-3) var(--s-4);
+  border-right:0.5px solid rgba(var(--ink),.08);
+  user-select:none; cursor:default;
+}
+.setup-brand{ display:flex; align-items:baseline; gap:var(--s-2); padding: 0 var(--s-3); margin-bottom: var(--s-5); }
+.setup-kicker{
+  font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  color:rgba(var(--ink),.40);
+}
+.setup-steps{ list-style:none; display:flex; flex-direction:column; gap:2px; }
+.setup-steps li{
+  display:flex; align-items:center; gap:var(--s-3);
+  height:32px; padding:0 var(--s-3); border-radius:7px;
+  font-size:13px; font-weight:500; letter-spacing:-0.006em;
+  color:rgba(var(--ink),.50); cursor:pointer;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.setup-steps li:hover{ background:rgba(var(--ink),.06); color:rgba(var(--ink),.82); }
+.setup-steps li.on{ background:rgba(var(--ink),.11); color:rgba(var(--ink),.95); font-weight:600; }
+.setup-steps li .n{
+  width:18px; height:18px; border-radius:50%; flex:none;
+  display:grid; place-items:center;
+  font-size:10.5px; font-weight:700; font-variant-numeric:tabular-nums;
+  border:0.5px solid rgba(var(--ink),.25); color:rgba(var(--ink),.60);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.setup-steps li.on .n{ background:rgba(var(--ink),.92); color:rgba(var(--ink-inv),1); border-color:transparent; }
+.setup-steps li.done .n{ background:rgba(var(--ink),.14); border-color:transparent; color:rgba(var(--ink),.85); }
+.setup-steps li.done .n svg{ width:9px; height:9px; }
+.setup-skip{ margin-top:auto; align-self:flex-start; margin-left:var(--s-1); }
+
+/* pages */
+.setup-main{ flex:1; min-width:0; display:flex; flex-direction:column; }
+.setup-scroll{
+  flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain;
+  padding: var(--s-6) var(--s-6) var(--s-4);
+  scrollbar-width:thin; scrollbar-color:rgba(var(--ink),.2) transparent;
+}
+.setup-scroll::-webkit-scrollbar{ width:8px; }
+.setup-scroll::-webkit-scrollbar-thumb{ background:rgba(var(--ink),.18); border-radius:4px; border:2px solid transparent; background-clip:content-box; }
+.setup-page{ display:none; }
+.setup-page.on{ display:block; animation: land var(--t-settle) var(--ease) both; }
+.setup-title{
+  font-size:22px; font-weight:700; letter-spacing:-0.024em;
+  color:rgba(var(--ink),.96);
+  margin: 0 var(--s-1) var(--s-2);
+}
+.setup-lede{
+  font-size:13.5px; line-height:1.5; letter-spacing:-0.006em;
+  color:rgba(var(--ink),.62);
+  margin: 0 var(--s-1) var(--s-5); max-width:520px; text-wrap:pretty;
+}
+.setup-list{ list-style:none; display:flex; flex-direction:column; gap:var(--s-3); margin: 0 var(--s-1) var(--s-5); max-width:520px; }
+.setup-list li{
+  position:relative; padding-left:18px;
+  font-size:13px; line-height:1.5; letter-spacing:-0.006em;
+  color:rgba(var(--ink),.62); text-wrap:pretty;
+}
+.setup-list li::before{
+  content:""; position:absolute; left:2px; top:8px; width:6px; height:6px; border-radius:50%;
+  background:rgba(var(--ink),.45);
+}
+.setup-list b{ font-weight:600; color:rgba(var(--ink),.90); }
+.setup-note{ font-size:12px; line-height:1.5; letter-spacing:-0.003em; color:rgba(var(--ink),.42); margin: 0 var(--s-1); max-width:520px; }
+
+/* footer */
+.setup-foot{
+  flex:none; display:flex; align-items:center; gap:var(--s-3);
+  padding: var(--s-3) var(--s-6);
+  border-top:0.5px solid rgba(var(--ink),.08);
+}
+.setup-count{
+  margin-left:auto;
+  font-size:12px; font-weight:500; font-variant-numeric:tabular-nums;
+  color:rgba(var(--ink),.45);
+}
+.mini.primary{
+  background:rgba(var(--ink),.90); border-color:rgba(var(--ink),.90);
+  color:rgba(var(--ink-inv),1); height:28px; padding:0 16px;
+}
+.mini.primary:hover{ background:rgba(var(--ink),.98); }
+.keys.inline{ display:inline-flex; gap:5px; vertical-align:middle; margin:0 3px; }
+.keys.inline .kbd{ font-size:11px; padding:3px 8px 4px; border-radius:6px; }
+
+/* platform copy: the html element carries .mac (see app.js) */
+.only-mac{ display:none; }
+html.mac .only-mac{ display:revert; }
+html.mac .not-mac{ display:none; }
+
+@media (prefers-reduced-motion: reduce){
+  .setup, .setup-page.on{ animation:none !important; }
+}

@@ -7,6 +7,8 @@
   "use strict";
 
   const isMac = /Mac/.test(navigator.platform);
+  /* platform copy + macOS-only rows (setup.css / styles.css key off this) */
+  document.documentElement.classList.toggle("mac", isMac);
 
   function $(id) { return document.getElementById(id); }
 
@@ -181,7 +183,7 @@
       powerMode: "auto", modelBattery: "base.en", modelPlugged: "small.en",
       model: "base.en", treatAsDesktop: MOCK_HW.treatAsDesktop,
       soundCues: true, volume: 60, recordingPill: true,
-      pillPosition: "bottom", pillPadding: 110,
+      pillPosition: "bottom", pillPadding: 110, pillOverFullscreen: true,
       clipboardCleanup: "light", smartVocab: true,
       micName: "MacBook Pro Microphone", launchAtLogin: true,
       saveTranscripts: true, savePath: "~/Documents/Tiro", transparency: 35,
@@ -295,6 +297,7 @@
     cancel_record() { return Promise.resolve(null); },
     set_pin() { return Promise.resolve(null); },
     set_expanded() { return Promise.resolve(null); },
+    set_glass_width() { return Promise.resolve(null); },
     close_panel() { return Promise.resolve(null); },
     begin_drag() { return Promise.resolve(null); },
     pick_folder() { return Promise.resolve(null); },
@@ -365,6 +368,7 @@
     mics: [],
     shortcuts: {},
     theme: "dark",
+    platform: "",                // "macos" | "windows" | "linux" from get_state
     recording: false,
     pinned: false,
     adv: false,
@@ -897,6 +901,9 @@
         if (gen !== advGen) return;
         panel.classList.remove("advout", "adv");
         markSettle();
+        /* the native backdrop (macOS) shrinks with the glass, not with the
+           window, which only resizes after the settle below */
+        Promise.resolve(api.set_glass_width && api.set_glass_width(400)).catch(() => {});
         advTimer = setTimeout(() => {
           if (gen !== advGen) return;
           Promise.resolve(api.set_expanded && api.set_expanded(false)).catch(() => {});
@@ -963,6 +970,12 @@
   function applyTransparency(t) {
     document.documentElement.style.setProperty("--glass-a", tToAlpha(t).toFixed(2));
   }
+  /* Liquid Glass (macOS): the native backdrop lives in the backend; the
+     panel only dresses the surface for it (styles.css `html.glass`) */
+  function applyGlass() {
+    const on = isMac && !!(App.settings && App.settings.liquidGlass !== false);
+    document.documentElement.classList.toggle("glass", on);
+  }
 
   function powerWord(power) { return power === "plugged" ? "plugged in" : "battery"; }
 
@@ -996,6 +1009,8 @@
     swVocab: (on) => setSetting("smartVocab", on),
     swSave: (on) => setSetting("saveTranscripts", on),
     swLogin: (on) => setSetting("launchAtLogin", on),
+    swGlass: (on) => { setSetting("liquidGlass", on); applyGlass(); },
+    swPillFs: (on) => setSetting("pillOverFullscreen", on),
     /* live re-render: the Engine section swaps to the new machine kind at
        once; the backend hot-re-resolves the engine in the background */
     swDesktop: (on) => {
@@ -1014,8 +1029,12 @@
   });
   function syncPillRows() {
     const off = !swOn($("swPill"));
+    const on = document.querySelector('[data-seg="pillpos"] button.on');
+    /* a notch dock has no edge distance to tune */
+    const notch = !!(on && on.dataset.value === "notch");
     $("rowPillPos").classList.toggle("disabled", off);
-    $("rowPillDist").classList.toggle("disabled", off);
+    $("rowPillDist").classList.toggle("disabled", off || notch);
+    $("rowPillFs").classList.toggle("disabled", off);
   }
 
   /* segmented controls */
@@ -1031,7 +1050,7 @@
       /* desktop 2-way Compute: GPU stores "auto" (not "gpu") so the same
          config on a laptop keeps battery-aware switching instead of a force */
       if (seg.dataset.seg === "compute") { setSetting("powerMode", v === "cpu" ? "cpu" : "auto"); syncEngineRows(); updateEngine(); }
-      if (seg.dataset.seg === "pillpos") setSetting("pillPosition", v);
+      if (seg.dataset.seg === "pillpos") { setSetting("pillPosition", v); syncPillRows(); }
       if (seg.dataset.seg === "cleanup") { setSetting("clipboardCleanup", v); setCleanupCopy(v); }
       if (seg.dataset.seg === "theme") {
         setSetting("theme", v);
@@ -1039,7 +1058,9 @@
       }
     }));
   });
-  function syncThemeSeg() { segSet($("themeSeg"), App.theme); }
+  function syncThemeSeg() {
+    document.querySelectorAll('[data-seg="theme"]').forEach((seg) => segSet(seg, App.theme));
+  }
 
   /* clipboard cleanup — dynamic helper copy */
   const cleanupCopy = {
@@ -1261,6 +1282,7 @@
       App.models = list;
       renderModels();
       syncModelSelects();
+      if (setupOpen) renderSetupModels();
     }).catch(() => {});
   }
 
@@ -1325,22 +1347,24 @@
   }
 
   function updateModelRow(name) {
-    const el = document.querySelector('.mstate[data-model="' + name + '"]');
     const m = App.models.find((x) => x.name === name);
-    if (!el || !m) return;
-    const next = modelState(m);
-    if (el.dataset.state !== next) {
-      el.dataset.state = next;
-      renderModelState(el);
-      return;
-    }
-    if (next === "downloading") {
-      const p = App.modelProgress[name];
-      const pct = p && p.pct ? p.pct : 0;
-      const bar = el.querySelector(".bar i"), lab = el.querySelector(".pct");
-      if (bar) bar.style.width = pct + "%";
-      if (lab) lab.textContent = Math.round(pct) + "%";
-    }
+    if (!m) return;
+    /* the row may be rendered twice: Models view and the setup guide */
+    document.querySelectorAll('.mstate[data-model="' + name + '"]').forEach((el) => {
+      const next = modelState(m);
+      if (el.dataset.state !== next) {
+        el.dataset.state = next;
+        renderModelState(el);
+        return;
+      }
+      if (next === "downloading") {
+        const p = App.modelProgress[name];
+        const pct = p && p.pct ? p.pct : 0;
+        const bar = el.querySelector(".bar i"), lab = el.querySelector(".pct");
+        if (bar) bar.style.width = pct + "%";
+        if (lab) lab.textContent = Math.round(pct) + "%";
+      }
+    });
   }
 
   function startDownload(name) {
@@ -1626,7 +1650,8 @@
   }
   let waveRunning = false;
   function waveVisible() {
-    return !document.hidden && App.adv && App.view === "settings";
+    return !document.hidden && App.adv &&
+      (App.view === "settings" || (setupOpen && SETUP_STEPS[setupStep].id === "audio"));
   }
   function kickWave() {
     if (waveRunning || !waveVisible()) return;
@@ -1771,7 +1796,9 @@
       $("volVal").textContent = s.volume + "%";
     }
     setSw($("swPill"), s.recordingPill);
-    segSet(document.querySelector('[data-seg="pillpos"]'), s.pillPosition === "top" ? "top" : "bottom");
+    segSet(document.querySelector('[data-seg="pillpos"]'),
+      (s.pillPosition === "top" || s.pillPosition === "notch") ? s.pillPosition : "bottom");
+    setSw($("swPillFs"), s.pillOverFullscreen !== false);
     if (typeof s.pillPadding === "number") {
       rngDist.max = String(Math.max(400, s.pillPadding));
       rngDist.value = s.pillPadding; syncFill(rngDist);
@@ -1784,6 +1811,7 @@
     setSw($("swSave"), s.saveTranscripts !== false);
     setSw($("swLogin"), s.launchAtLogin);
     setSw($("swDesktop"), !!s.treatAsDesktop);
+    setSw($("swGlass"), s.liquidGlass !== false);
     syncThemeSeg();
     if (typeof s.transparency === "number") {
       const a = tToAlpha(s.transparency);
@@ -1808,6 +1836,8 @@
     if (App.settings && typeof App.settings.transparency === "number") {
       applyTransparency(App.settings.transparency);
     }
+    if (state.platform) App.platform = state.platform;
+    applyGlass();
   }
 
   function renderAll() {
@@ -1821,8 +1851,146 @@
   }
 
   /* ════════════════════════════════════════════════════════════════════
+     SETUP GUIDE (first run)
+     A full-surface overlay that walks through the settings that matter on
+     day one. Each step BORROWS the real Settings sections (the .grp nodes
+     move into the page and back home when the guide closes), so the
+     controls, their wiring and their live previews are the ones from
+     Settings — nothing is duplicated or re-synced. Opens on the first boot
+     while the backend reports setupDone=false; Finish (or Skip) persists
+     setupDone=true. Reachable later via the tray/menu bar and Settings.
+     ════════════════════════════════════════════════════════════════════ */
+  const SETUP_STEPS = [
+    { id: "welcome", title: "Welcome", adopt: [] },
+    { id: "shortcuts", title: "Shortcuts", adopt: ["grpShortcuts"] },
+    { id: "appearance", title: "Appearance", adopt: ["grpAppearance"] },
+    { id: "engine", title: "Model & engine", adopt: ["grpEngine"] },
+    { id: "audio", title: "Mic & sound", adopt: ["grpInput", "grpAudio"] },
+    { id: "finish", title: "Finish", adopt: ["grpCapture", "grpSystem"] }
+  ];
+  const setupEl = $("setup");
+  const setupSteps = $("setupSteps");
+  let setupOpen = false;
+  let setupStep = 0;
+  let setupWasAdv = false;
+  const setupAnchors = {};     // grp id -> hidden marker left at its home
+
+  SETUP_STEPS.forEach((st, i) => {
+    const li = h("li", { "data-step": st.id }, [
+      h("span", { class: "n", text: String(i + 1) }),
+      h("span", { text: st.title })
+    ]);
+    li.addEventListener("click", () => setupShow(i));
+    setupSteps.appendChild(li);
+  });
+
+  function setupAdopt(id, slot) {
+    const grp = $(id);
+    if (!grp) return;
+    if (!setupAnchors[id]) {
+      const a = document.createElement("span");
+      a.className = "setup-anchor";
+      a.hidden = true;
+      grp.parentNode.insertBefore(a, grp);
+      setupAnchors[id] = a;
+    }
+    slot.appendChild(grp);
+  }
+  function setupRestoreAll() {
+    Object.keys(setupAnchors).forEach((id) => {
+      const a = setupAnchors[id], grp = $(id);
+      if (a && grp && a.parentNode) a.replaceWith(grp);
+      delete setupAnchors[id];
+    });
+  }
+  function renderSetupModels() {
+    const card = $("setupModels");
+    if (!card) return;
+    card.innerHTML = "";
+    const chosen = [App.settings.modelBattery, App.settings.modelPlugged, App.settings.model];
+    /* the curated set, plus whatever the Engine rows currently point at */
+    const picks = App.models.filter((m) => m.curated || chosen.indexOf(m.name) >= 0);
+    picks.forEach((m) => card.appendChild(modelRow(m)));
+    card.closest(".grp").style.display = picks.length ? "" : "none";
+  }
+  function renderSetupKeys() {
+    const box = $("setupKeys");
+    if (!box) return;
+    box.innerHTML = "";
+    const keys = (App.shortcuts.dictate && App.shortcuts.dictate.keys) || ["Ctrl", "Alt", "Space"];
+    keys.forEach((k) => box.appendChild(h("span", { class: "kbd", text: k })));
+  }
+  function setupShow(i) {
+    stopListening();
+    setupStep = Math.max(0, Math.min(SETUP_STEPS.length - 1, i));
+    const step = SETUP_STEPS[setupStep];
+    const page = setupEl.querySelector('.setup-page[data-step="' + step.id + '"]');
+    /* sections go home first so a step never shows another step's rows */
+    setupRestoreAll();
+    const slot = page.querySelector(".setup-slot");
+    if (slot) step.adopt.forEach((id) => setupAdopt(id, slot));
+    setupEl.querySelectorAll(".setup-page").forEach((p) => p.classList.toggle("on", p === page));
+    setupSteps.querySelectorAll("li").forEach((li, idx) => {
+      li.classList.toggle("on", idx === setupStep);
+      li.classList.toggle("done", idx < setupStep);
+    });
+    $("setupScroll").scrollTop = 0;
+    $("setupBack").disabled = setupStep === 0;
+    $("setupNext").textContent = setupStep === SETUP_STEPS.length - 1 ? "Finish" : "Continue";
+    $("setupCount").textContent = (setupStep + 1) + " of " + SETUP_STEPS.length;
+    if (step.id === "engine") renderSetupModels();
+    if (step.id === "audio") { ensureMic(); kickWave(); }
+    if (step.id === "finish") renderSetupKeys();
+    if (step.id !== "audio") stopMonitorIfLive();
+  }
+  function openSetup() {
+    if (setupOpen) return;
+    setupOpen = true;
+    setupWasAdv = App.adv;
+    panel.classList.add("setup-open");
+    setupEl.hidden = false;
+    /* the guide wants the wide surface; the panel comes back the way it was */
+    if (!App.adv) setAdv(true);
+    setupShow(0);
+  }
+  function closeSetup(done) {
+    if (!setupOpen) return;
+    setupOpen = false;
+    stopListening();
+    stopMonitorIfLive();
+    setupRestoreAll();
+    setupEl.hidden = true;
+    panel.classList.remove("setup-open");
+    if (done) {
+      App.settings.setupDone = true;
+      Promise.resolve(api.set_setting("setupDone", true)).catch(() => {});
+    }
+    if (!setupWasAdv) setAdv(false);
+  }
+  $("setupNext").addEventListener("click", () => {
+    if (setupStep >= SETUP_STEPS.length - 1) closeSetup(true);
+    else setupShow(setupStep + 1);
+  });
+  $("setupBack").addEventListener("click", () => setupShow(setupStep - 1));
+  $("setupSkip").addEventListener("click", () => closeSetup(true));
+  $("setupAgainBtn").addEventListener("click", openSetup);
+  /* the rail doubles as the drag handle while the header is covered */
+  $("setupRail").addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0 || ev.target.closest("button, li")) return;
+    Promise.resolve(api.begin_drag && api.begin_drag()).catch(() => {});
+  });
+
+  /* ════════════════════════════════════════════════════════════════════
      PUBLIC BACKEND-FACING FUNCTIONS (the contract)
      ════════════════════════════════════════════════════════════════════ */
+  /* tray / menu bar entries: bring a view up, or the setup guide */
+  window.tiroOpenView = function (v) {
+    /* the view opens expanded anyway: don't collapse on the way out */
+    if (setupOpen) { setupWasAdv = true; closeSetup(false); }
+    setView(v);
+    setAdv(true);
+  };
+  window.tiroOpenSetup = function () { openSetup(); };
   window.tiroApplyState = function (state) {
     ingestState(state);
     renderAll();
@@ -1949,10 +2117,14 @@
       refreshModels();
       loadVocab();
       loadDays();
+      if (App.settings && App.settings.setupDone === false) openSetup();
     }).catch(() => {
       ingestState(MOCK_STATE);
       renderAll();
     });
+    let previewSetup = false;
+    try { previewSetup = new URLSearchParams(window.location.search).get("setup") === "1"; } catch (_) { /* ignore */ }
+    if (!HAS_BRIDGE && previewSetup) openSetup();
   }
 
   function renderSkeleton() {

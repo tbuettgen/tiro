@@ -66,9 +66,50 @@ a{ color:rgba(var(--ink),.92); } a:hover{ color:rgba(var(--ink),1); }
   opacity:.025;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
 }
+/* Liquid Glass (macOS, when the panel setting is on): the pill window has
+   no native backdrop — it is a moving capsule inside a larger transparent
+   window — so it keeps the tint, but wears the same specular rim and sheen
+   as the panel so the two read as one material. */
+html.glass .pill{
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,.04) 40%, rgba(255,255,255,0) 60%, rgba(255,255,255,.07) 100%),
+    rgba(var(--glass-rgb), var(--glass-a));
+  border-color:rgba(255,255,255,.32);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.45), inset 0 -1px 0 rgba(255,255,255,.10);
+}
+html.glass [data-theme="light"] .pill, html.glass body[data-theme="light"] .pill{
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.60) 0%, rgba(255,255,255,.20) 40%, rgba(255,255,255,0) 60%, rgba(255,255,255,.25) 100%),
+    rgba(var(--glass-rgb), var(--glass-a));
+  border-color:rgba(255,255,255,.85);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.95), inset 0 0 0 0.5px rgba(20,20,24,.10);
+}
 .pill .inner{
   position:relative; display:inline-flex; align-items:center; gap:var(--s-2);
 }
+/* notch ("Dynamic Island", macOS): the notch itself appears to grow. The
+   window's top edge sits on the very top of the screen (placement.rs), so
+   the black shape starts there — continuous with the cutout, slightly
+   wider than it, no border — and the content sits in the part below the
+   notch band (`--notch-h`), rounded at the bottom. The entrance rises out
+   of the cutout. Same look in both themes (the notch is always black),
+   hence the !important over the theme and glass rules. */
+body[data-pos="notch"]{
+  --ink:255,255,255; --ink-inv:16,16,19;
+  --hairline:rgba(255,255,255,.16); --highlight:rgba(255,255,255,.10);
+}
+body[data-pos="notch"] .stage{ align-items:start; }
+body[data-pos="notch"] .pill{
+  background:#000 !important;
+  border:0 !important;
+  border-radius:0 0 20px 20px !important;
+  box-shadow: inset 0 -1px 0 rgba(255,255,255,.07) !important;
+  min-width:calc(var(--notch-w, 0px) + 24px);
+  height:calc(var(--notch-h, 32px) + 34px);
+  padding-top:var(--notch-h, 32px);
+  justify-content:center;
+}
+body[data-pos="notch"] .pill::before{ opacity:.04; }
 /* error: urgency via weight and brighter ink, ring stays consistent */
 .pill.error .lbl{ font-weight:600; color:rgba(var(--ink),.95); }
 
@@ -92,8 +133,8 @@ a{ color:rgba(var(--ink),.92); } a:hover{ color:rgba(var(--ink),1); }
 }
 .pill.enter{ animation: pill-enter var(--t-enter) var(--ease) both; }
 .pill.exit{ animation: pill-exit var(--t-exit) var(--ease) both; }
-body[data-pos="top"] .pill.enter{ animation-name: pill-enter-top; }
-body[data-pos="top"] .pill.exit{ animation-name: pill-exit-top; }
+body[data-pos="top"] .pill.enter, body[data-pos="notch"] .pill.enter{ animation-name: pill-enter-top; }
+body[data-pos="top"] .pill.exit, body[data-pos="notch"] .pill.exit{ animation-name: pill-exit-top; }
 /* content swap: leaving pieces sink softly; arriving pieces settle with weight */
 @keyframes inner-out{
   to{ opacity:0; transform:scale(.9); filter:blur(2px); }
@@ -214,7 +255,8 @@ function makeCanvas(w, h){
   return c;
 }
 function ink(a){
-  const dark = document.body.dataset.theme !== 'light';
+  /* the notch island is black in every theme */
+  const dark = document.body.dataset.pos === 'notch' || document.body.dataset.theme !== 'light';
   return (dark ? 'rgba(255,255,255,' : 'rgba(20,20,24,') + a + ')';
 }
 /* unified waveform — one canvas lives across recording ↔ transcribing;
@@ -370,13 +412,22 @@ const pill = new Pill(document.getElementById('pill'));
 function applyLook(s){
   if (!s) return;
   if (s.settings){
-    const top = s.settings.pillPosition === 'top';
-    const cur = document.body.dataset.pos === 'top';
-    if (top !== cur) document.body.dataset.pos = top ? 'top' : 'bottom';
+    /* the dock actually used (a notch config on a screen without one
+       reports "top"), plus the cutout's width for the island's min-width */
+    const dock = (s.pill && s.pill.dock) || s.settings.pillPosition;
+    const pos = (dock === 'top' || dock === 'notch') ? dock : 'bottom';
+    if (document.body.dataset.pos !== pos) document.body.dataset.pos = pos;
+    const nw = (s.pill && typeof s.pill.notchWidth === 'number') ? s.pill.notchWidth : 0;
+    const nh = (s.pill && typeof s.pill.notchHeight === 'number') ? s.pill.notchHeight : 0;
+    document.documentElement.style.setProperty('--notch-w', Math.round(nw) + 'px');
+    document.documentElement.style.setProperty('--notch-h', Math.round(nh) + 'px');
     if (typeof s.settings.transparency === 'number'){
       const a = (0.95 - 0.65 * Math.max(0, Math.min(100, s.settings.transparency)) / 100);
       document.documentElement.style.setProperty('--glass-a', a.toFixed(2));
     }
+    /* the panel's Liquid Glass setting styles the pill's rim to match */
+    const glass = /Mac/.test(navigator.platform) && s.settings.liquidGlass !== false;
+    document.documentElement.classList.toggle('glass', glass);
   }
   const eff = s.effectiveTheme === 'light' ? 'light' : 'dark';
   if (document.body.dataset.theme !== eff) document.body.dataset.theme = eff;
@@ -389,8 +440,12 @@ function refreshLook(){
        e.g. pill.html?pillPosition=top */
     let q = null;
     try { q = new URLSearchParams(location.search).get('pillPosition'); } catch (e) { /* ignore */ }
-    const top = (window.__mockPillPosition || q) === 'top';
-    document.body.dataset.pos = top ? 'top' : 'bottom';
+    const want = window.__mockPillPosition || q;
+    document.body.dataset.pos = (want === 'top' || want === 'notch') ? want : 'bottom';
+    if (want === 'notch'){
+      document.documentElement.style.setProperty('--notch-w', '185px');
+      document.documentElement.style.setProperty('--notch-h', '32px');
+    }
   }
 }
 

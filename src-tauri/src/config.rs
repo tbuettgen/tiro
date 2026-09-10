@@ -62,6 +62,25 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Default `panel_transparency` (0 solid … 100 most see-through). Over the
+/// native glass backdrop on macOS the surface can afford to be more
+/// see-through; elsewhere the tint is all there is.
+pub const DEFAULT_TRANSPARENCY: &str = if cfg!(target_os = "macos") {
+    "70"
+} else {
+    "45"
+};
+/// `DEFAULT_TRANSPARENCY` as the number the panel API clamps against.
+pub const DEFAULT_TRANSPARENCY_INT: i64 = if cfg!(target_os = "macos") { 70 } else { 45 };
+/// Default `pill_position`: on macOS the pill hangs from the notch (a
+/// screen without one places it flush under the top edge); elsewhere the
+/// historical bottom-center spot.
+pub const DEFAULT_PILL_POSITION: &str = if cfg!(target_os = "macos") {
+    "notch"
+} else {
+    "bottom"
+};
+
 /// The original's `DEFAULTS["general"]`, in the same order.
 pub fn defaults(app_dir: &Path) -> Vec<(&'static str, String)> {
     let vault = home_dir().join("Documents").join("Tiro");
@@ -89,15 +108,32 @@ pub fn defaults(app_dir: &Path) -> Vec<(&'static str, String)> {
         ("beeps", "true".into()),
         ("sound_volume", "1.0".into()),
         ("pill", "true".into()),
-        // Pill dock edge ("top" | "bottom") and its distance in px from that
-        // work-area edge. bottom/110 is the pre-setting fixed spot, so an
-        // untouched config places the pill exactly where it always was.
-        ("pill_position", "bottom".into()),
+        // Pill dock ("notch" | "top" | "bottom") and its distance in px from
+        // that work-area edge. bottom/110 is the pre-setting fixed spot, so
+        // an untouched config outside macOS places the pill exactly where
+        // it always was; macOS hangs it from the notch.
+        ("pill_position", DEFAULT_PILL_POSITION.into()),
         ("pill_padding", "110".into()),
+        // macOS: keep the pill visible on every Space, full-screen apps
+        // included (window level + collection behaviour). Inert elsewhere.
+        ("pill_over_fullscreen", "true".into()),
         ("clipboard_cleanup", "light".into()),
         ("use_vocab_bias", "true".into()),
         ("theme", "system".into()),
-        ("panel_transparency", "45".into()),
+        ("panel_transparency", DEFAULT_TRANSPARENCY.into()),
+        // macOS: native glass backdrop under the panel (Settings ->
+        // Appearance -> Liquid Glass). Stored but inert elsewhere.
+        (
+            "liquid_glass",
+            if cfg!(target_os = "macos") {
+                "true"
+            } else {
+                "false"
+            }
+            .into(),
+        ),
+        // First-run setup guide: false until the user finishes or skips it.
+        ("setup_done", "false".into()),
         ("vault_dir", vault.to_string_lossy().into_owned()),
         ("fallback_dir", fallback.to_string_lossy().into_owned()),
         ("save_transcripts", "true".into()),
@@ -148,6 +184,52 @@ impl ConfigStore {
                             "panel_hotkey".to_string(),
                             "ctrl+alt+c".to_string(),
                         );
+                        changed = true;
+                    }
+                    // ONE-TIME migration to the native glass backdrop on
+                    // macOS: a file from before `liquid_glass` existed
+                    // carries a transparency tuned for the flat tint, so it
+                    // moves to the glass default once. The backfill below
+                    // adds the key, so this can never fire again.
+                    if cfg!(target_os = "macos")
+                        && ini.get_from(Some(SECTION), "liquid_glass").is_none()
+                    {
+                        // Only a transparency still at the pre-glass default
+                        // moves; a value the user tuned is theirs.
+                        if matches!(
+                            ini.get_from(Some(SECTION), "panel_transparency"),
+                            None | Some("45")
+                        ) {
+                            ini.set_to(
+                                Some(SECTION),
+                                "panel_transparency".to_string(),
+                                DEFAULT_TRANSPARENCY.to_string(),
+                            );
+                        }
+                        // The same one-time move takes a pill still at the
+                        // old default spot (bottom, 110 px — the values the
+                        // backfill wrote for everyone) to the notch; a pill
+                        // the user placed deliberately is left alone.
+                        if ini.get_from(Some(SECTION), "pill_position") == Some("bottom")
+                            && ini.get_from(Some(SECTION), "pill_padding") == Some("110")
+                        {
+                            ini.set_to(
+                                Some(SECTION),
+                                "pill_position".to_string(),
+                                DEFAULT_PILL_POSITION.to_string(),
+                            );
+                        }
+                        changed = true;
+                    }
+                    // A config that predates the setup guide belongs to an
+                    // app that was already set up, so the guide stays closed
+                    // for it — except on macOS, where the one-time glass
+                    // move above is the moment to walk through the new menu
+                    // bar, notch and glass settings once.
+                    if !cfg!(target_os = "macos")
+                        && ini.get_from(Some(SECTION), "setup_done").is_none()
+                    {
+                        ini.set_to(Some(SECTION), "setup_done".to_string(), "true".to_string());
                         changed = true;
                     }
                     for (key, value) in &defaults {
@@ -264,6 +346,58 @@ mod tests {
     }
 
     #[test]
+    fn pre_glass_config_moves_transparency_to_the_glass_default_once() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.ini");
+        std::fs::write(
+            &path,
+            "[general]\npanel_transparency = 45\ntheme = dark\npill_position = bottom\npill_padding = 110\n",
+        )
+        .unwrap();
+        let cfg = load_in(&dir);
+        if cfg!(target_os = "macos") {
+            assert_eq!(cfg.get("panel_transparency"), DEFAULT_TRANSPARENCY);
+            assert_eq!(cfg.get("liquid_glass"), "true");
+            assert_eq!(
+                cfg.get("pill_position"),
+                "notch",
+                "untouched pill moves to the notch"
+            );
+            assert_eq!(
+                cfg.get("setup_done"),
+                "false",
+                "macOS walks through the new settings once"
+            );
+        } else {
+            assert_eq!(cfg.get("panel_transparency"), "45");
+            assert_eq!(cfg.get("liquid_glass"), "false");
+            assert_eq!(cfg.get("pill_position"), "bottom");
+            assert_eq!(
+                cfg.get("setup_done"),
+                "true",
+                "an existing config is already set up"
+            );
+        }
+        assert_eq!(cfg.get("theme"), "dark", "unrelated keys untouched");
+        // values the user tuned are never moved
+        let dir2 = TempDir::new().unwrap();
+        std::fs::write(
+            dir2.path().join("config.ini"),
+            "[general]\npanel_transparency = 0\npill_position = top\npill_padding = 40\n",
+        )
+        .unwrap();
+        let cfg2 = load_in(&dir2);
+        assert_eq!(cfg2.get("panel_transparency"), "0");
+        assert_eq!(cfg2.get("pill_position"), "top");
+        assert_eq!(cfg2.get("pill_padding"), "40");
+        // The key is now present, so a user's later choice survives reloads.
+        let mut cfg = cfg;
+        cfg.set("panel_transparency", "0");
+        let again = load_in(&dir);
+        assert_eq!(again.get("panel_transparency"), "0");
+    }
+
+    #[test]
     fn first_run_writes_defaults() {
         let dir = TempDir::new().unwrap();
         let cfg = load_in(&dir);
@@ -283,8 +417,10 @@ mod tests {
         assert_eq!(cfg.get("sound_volume"), "1.0");
         assert_eq!(cfg.get("clipboard_cleanup"), "light");
         assert_eq!(cfg.get("theme"), "system");
-        assert_eq!(cfg.get("panel_transparency"), "45");
-        assert_eq!(cfg.get("pill_position"), "bottom");
+        assert_eq!(cfg.get("panel_transparency"), DEFAULT_TRANSPARENCY);
+        assert_eq!(cfg.get("setup_done"), "false");
+        assert_eq!(cfg.get("pill_position"), DEFAULT_PILL_POSITION);
+        assert_eq!(cfg.get("pill_over_fullscreen"), "true");
         assert_eq!(cfg.get("pill_padding"), "110");
         assert_eq!(
             cfg.get("fallback_dir"),
@@ -375,7 +511,11 @@ mod tests {
         let cfg = ConfigStore::load(path, dir.path());
         assert_eq!(cfg.get("theme"), "light", "existing value preserved");
         assert_eq!(cfg.get("model_ac"), "small.en", "missing key backfilled");
-        assert_eq!(cfg.get("pill_position"), "bottom", "pill keys backfilled");
+        assert_eq!(
+            cfg.get("pill_position"),
+            DEFAULT_PILL_POSITION,
+            "pill keys backfilled"
+        );
         assert_eq!(cfg.get("pill_padding"), "110", "pill keys backfilled");
         let raw = fs::read_to_string(cfg.path()).unwrap();
         assert!(raw.contains("dictation_hotkey"), "backfill was persisted");

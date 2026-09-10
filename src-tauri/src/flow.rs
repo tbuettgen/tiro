@@ -871,6 +871,10 @@ fn show_pill(app: &AppHandle, ctx: &AppCtx, state: &str, payload: Option<&str>) 
     let _ = app.run_on_main_thread(move || {
         if let Some(w) = a.get_webview_window("pill") {
             let _ = w.show();
+            // show() orders through makeKeyAndOrderFront, which an inactive
+            // app cannot use over another app's full-screen Space
+            #[cfg(target_os = "macos")]
+            crate::macos::present_pill(&a, &w);
         }
     });
     push_pill(app, state, payload);

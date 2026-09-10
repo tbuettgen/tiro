@@ -82,6 +82,55 @@ optional GitHub Actions template is `ci/macos.yml`; copy it to
 `.github/workflows/macos.yml` using a GitHub login with workflow permission
 to run these checks on pushes and pull requests.
 
+## Menu bar
+
+Tiro runs as a menu bar app: its icon sits with the other status items at the
+top right of the screen and there is no Dock icon. Click the icon to show or
+hide the panel. Right-click (or Control-click) it for the menu: Show Tiro,
+Start/Stop Dictation, Settings…, Setup Guide…, Restart Tiro and Quit Tiro.
+The icon gains a dot while recording and a ring while transcribing.
+
+If the icon does not appear on a MacBook with a notch, the menu bar is out of
+room: macOS hides status items that do not fit. Quit or hide another item,
+or use the panel shortcut below.
+
+## Setup guide
+
+The first launch opens a short guide in the panel: shortcuts, theme and
+transparency, the speech model and compute device, microphone and sound,
+then launch-at-login and the recording pill. Every control in it is the
+same one found later in Settings, so nothing needs redoing. Skip it with
+"Skip for now"; reopen it any time from the menu bar (Setup Guide…) or from
+Settings → System → Setup guide.
+
+## Appearance
+
+The panel uses a native glass backdrop: on macOS 26 and newer that is
+Liquid Glass, on macOS 12 through 15 the system HUD material. The
+Transparency slider in Settings → Appearance sets how much of the desktop
+shows through the tint; the Liquid Glass switch below it turns the backdrop
+off for a flat panel. The macOS default transparency is 70; upgrading from
+an earlier build moves only a value still at the old default (45) and keeps
+one you changed. The theme (light, dark or follow system) also sets
+the backdrop's appearance. The recording pill keeps a plain tint, since it
+is a moving capsule inside a larger transparent window, but wears the same
+rim so the two read as one material.
+
+## Recording pill
+
+On a MacBook with a notch the recording pill hangs from the notch itself,
+Dynamic Island style: black, flush with the cutout, at least as wide as it,
+rising out of it when a take starts. On a screen without a notch (an
+external display, or an older MacBook) the same setting places the pill
+flush under the top edge. Settings → Capture → Pill position switches
+between Notch, Top and Bottom; Top and Bottom keep the distance slider.
+
+The pill also shows over full-screen apps: it joins every Space at a level
+above full-screen windows, so a take started inside a full-screen app still
+has its indicator. Settings → Capture → "Show over full-screen apps" turns
+that off, leaving an ordinary floating pill on the current Space. The panel
+joins every Space too, so the panel shortcut works from a full-screen app.
+
 ## Permissions and first dictation
 
 The panel opens at launch. Close it to keep Tiro in the menu bar. Click its
@@ -130,6 +179,14 @@ the app in its final location; the login entry refers to that installed copy.
 ## Verify a build
 
 - The panel and menu bar icon appear, and expand/collapse keeps the panel usable.
+- The desktop blurs through the panel; Settings → Appearance → Liquid Glass
+  off gives a flat panel, and the Transparency slider changes the tint live.
+- A fresh app data folder (`TIRO_APP_DIR`) opens the setup guide; finishing it
+  writes `setup_done = true` to config.ini and the guide stays closed.
+- Right-clicking the menu bar icon shows the menu, and Settings… opens the
+  panel on the Settings view.
+- Starting a take on the built-in display hangs the pill from the notch; the
+  same take inside a full-screen app still shows it.
 - The engine reports the actual CPU/GPU device and power state.
 - A spoken sentence reaches both the clipboard and transcript history.
 - Cancel discards the take, and push-to-talk stops on release.

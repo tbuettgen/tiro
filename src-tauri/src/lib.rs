@@ -10,6 +10,8 @@ pub mod clipboard;
 pub mod config;
 pub mod cues;
 pub mod flow;
+#[cfg(target_os = "macos")]
+pub mod glass;
 pub mod gpu;
 pub mod gpu_worker;
 pub mod hotkeys;
@@ -54,6 +56,18 @@ fn copy_text(text: String, ctx: State<'_, flow::AppCtx>) {
 #[tauri::command]
 fn set_setting(app: tauri::AppHandle, key: String, value: Value) -> Value {
     api::set_setting(&app, &key, &value)
+}
+
+/// The panel tells the backend the width its glass is animating to, so the
+/// native backdrop (macOS) follows the surface instead of the window: on a
+/// collapse the window keeps its expanded size until the CSS transition is
+/// over. No-op elsewhere.
+#[tauri::command]
+fn set_glass_width(app: tauri::AppHandle, width: f64) {
+    #[cfg(target_os = "macos")]
+    glass::set_glass_width(&app, width, 520);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, width);
 }
 
 #[tauri::command]
@@ -282,6 +296,84 @@ fn stamp_status_dot(rgba: &mut [u8], width: u32, height: u32, color: [u8; 3]) {
     }
 }
 
+/// macOS menu bar template images are monochrome, so the recording and
+/// transcribing dots would look identical there. Hollow the transcribing
+/// dot into a ring (same centre and radius as `stamp_status_dot`) so the
+/// two states still read apart.
+#[cfg(target_os = "macos")]
+fn hollow_status_dot(rgba: &mut [u8], width: u32, height: u32) {
+    let size = width.min(height) as f32;
+    let radius = size * 0.175;
+    let margin = size * 0.02;
+    let cx = width as f32 - radius - margin;
+    let cy = height as f32 - radius - margin;
+    let hole = radius * 0.5;
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            if (dx * dx + dy * dy).sqrt() <= hole {
+                let i = ((y * width + x) * 4) as usize;
+                if i + 3 < rgba.len() {
+                    rgba[i + 3] = 0;
+                }
+            }
+        }
+    }
+}
+
+/// Colour RGBA -> macOS menu bar template RGBA: black everywhere, with
+/// alpha = the pixel's coverage minus its whiteness, so the icon's white
+/// counters cut through and the glyph keeps its shape. The system then
+/// tints the result for light and dark menu bars.
+#[cfg(target_os = "macos")]
+fn template_rgba(rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for px in rgba.as_chunks::<4>().0 {
+        let white = u32::from(px[0].min(px[1]).min(px[2])); // 255 = pure white
+        let alpha = (u32::from(px[3]) * (255 - white) / 255) as u8;
+        out.extend_from_slice(&[0, 0, 0, alpha]);
+    }
+    out
+}
+
+/// The tray's base image: on macOS a template glyph derived from the
+/// bundled 128 px icon (menu bar items are monochrome and system-tinted),
+/// elsewhere the colour window icon.
+fn tray_base_icon(app: &tauri::App) -> Option<tauri::image::Image<'static>> {
+    #[cfg(target_os = "macos")]
+    {
+        match tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png")) {
+            Ok(img) => {
+                let (w, h) = (img.width(), img.height());
+                return Some(tauri::image::Image::new_owned(
+                    template_rgba(img.rgba()),
+                    w,
+                    h,
+                ));
+            }
+            Err(e) => eprintln!("tray icon: bundled png unreadable ({e}); using the window icon"),
+        }
+    }
+    app.default_window_icon().map(|icon| {
+        tauri::image::Image::new_owned(icon.rgba().to_vec(), icon.width(), icon.height())
+    })
+}
+
+/// Bring the panel up (never hide it) and switch it to one of the
+/// advanced views — the menu bar's "Settings…" entry.
+fn open_panel_view(app: &tauri::AppHandle, view: &str) {
+    hotkeys::panel_request(app, hotkeys::PanelCmd::Summon);
+    flow::push_panel(app, "tiroOpenView", serde_json::json!(view));
+}
+
+/// Bring the panel up with the setup guide open — the menu bar's
+/// "Setup Guide…" entry, and the way back to it after the first run.
+fn open_panel_setup(app: &tauri::AppHandle) {
+    hotkeys::panel_request(app, hotkeys::PanelCmd::Summon);
+    flow::push_panel(app, "tiroOpenSetup", serde_json::json!(null));
+}
+
 /// Swap the tray icon + tooltip to reflect the dictation state ("idle",
 /// "recording", "transcribing"). Non-fatal like the rest of the tray: if
 /// the tray never built (or the app had no icon) this is a no-op, and a
@@ -298,7 +390,13 @@ pub fn set_tray_state(app: &tauri::AppHandle, state: &str) {
     };
     if let (Some(buf), Some(set)) = (buf, icons) {
         let image = tauri::image::Image::new(buf, set.width, set.height);
-        if let Err(e) = tray.set_icon(Some(image)) {
+        // macOS: the template flag lives on the NSImage, so a plain swap
+        // would drop it and leave a black silhouette on a dark menu bar.
+        #[cfg(target_os = "macos")]
+        let swapped = tray.set_icon_with_as_template(Some(image), true);
+        #[cfg(not(target_os = "macos"))]
+        let swapped = tray.set_icon(Some(image));
+        if let Err(e) = swapped {
             eprintln!("tray icon swap failed: {e}");
         }
     }
@@ -317,20 +415,33 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let open = MenuItem::with_id(app, "open", "Open Tiro", true, None::<&str>)?;
-    let dictate = MenuItem::with_id(app, "dictate", "Start/Stop dictation", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Show Tiro", true, None::<&str>)?;
+    let dictate = MenuItem::with_id(app, "dictate", "Start/Stop Dictation", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let setup = MenuItem::with_id(app, "setup", "Setup Guide…", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "Restart Tiro", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Tiro", true, None::<&str>)?;
     let menu = MenuBuilder::new(app)
-        .items(&[&open, &dictate, &restart, &quit])
+        .item(&open)
+        .item(&dictate)
+        .separator()
+        .item(&settings)
+        .item(&setup)
+        .separator()
+        .item(&restart)
+        .item(&quit)
         .build()?;
     let mut tray = TrayIconBuilder::with_id("tiro")
         .tooltip("Tiro")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "open" => hotkeys::dispatch(app, "panel"),
+            // "Show", not toggle: picked from the menu, the panel must never
+            // end up hidden (the icon's left click keeps the toggle).
+            "open" => hotkeys::panel_request(app, hotkeys::PanelCmd::Summon),
             "dictate" => hotkeys::dispatch(app, "dictate"),
+            "settings" => open_panel_view(app, "settings"),
+            "setup" => open_panel_setup(app),
             // Kill the GPU worker FIRST: exiting without it would leave an
             // orphan holding the dGPU awake until its EOF backstop fires.
             "restart" => {
@@ -356,18 +467,27 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 hotkeys::dispatch(tray.app_handle(), "panel");
             }
         });
-    if let Some(icon) = app.default_window_icon() {
+    let base = tray_base_icon(app);
+    if let Some(icon) = &base {
         tray = tray.icon(icon.clone());
     }
-    // Build the state-icon cache once, from the same default icon.
+    // Menu bar items are template images: the system tints the glyph for
+    // the light/dark menu bar and the pressed highlight.
+    #[cfg(target_os = "macos")]
+    {
+        tray = tray.icon_as_template(true);
+    }
+    // Build the state-icon cache once, from the same base icon.
     TRAY_ICONS.get_or_init(|| {
-        app.default_window_icon().map(|icon| {
+        base.as_ref().map(|icon| {
             let (width, height) = (icon.width(), icon.height());
             let idle = icon.rgba().to_vec();
             let mut recording = idle.clone();
             stamp_status_dot(&mut recording, width, height, [0xE5, 0x48, 0x4D]);
             let mut transcribing = idle.clone();
             stamp_status_dot(&mut transcribing, width, height, [0xF5, 0xA5, 0x24]);
+            #[cfg(target_os = "macos")]
+            hollow_status_dot(&mut transcribing, width, height);
             TrayIconSet {
                 width,
                 height,
@@ -442,8 +562,17 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Accessory NOW (runtime), so the windows built right after are
+            // created by an accessory app and can join full-screen Spaces
+            // (see macos::build_windows); and again for the run loop start,
+            // where tao would otherwise apply its Regular default.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            {
+                app.handle()
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                macos::build_windows(app)?;
+            }
             // On Linux the WebKitGTK widget reports a ~200 px minimum height,
             // so GTK refuses to make the pill window its configured 76 px.
             // Clear the size request on every descendant widget and re-apply
@@ -530,8 +659,32 @@ pub fn run() {
             flow::boot_engine(app.handle().clone());
             hotkeys::register_all(app.handle());
             power_watcher(app.handle().clone());
+            // The menu bar item must land where the bar is still drawn
+            // (see macos::hint_menu_bar_position) — seeded before it exists.
+            #[cfg(target_os = "macos")]
+            macos::hint_menu_bar_position();
             if let Err(e) = build_tray(app) {
                 eprintln!("tray unavailable: {e}");
+            }
+            // Native glass backdrop under the panel (Settings -> Appearance
+            // -> Liquid Glass); queued onto the main thread, never fatal.
+            #[cfg(target_os = "macos")]
+            glass::sync(app.handle());
+            // Window levels / Spaces: the pill over full-screen apps (when
+            // enabled), the panel reachable on every Space.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::Manager;
+                let (over, notch) = {
+                    let ctx = app.state::<flow::AppCtx>();
+                    let cfg = flow::lock(&ctx.cfg);
+                    (
+                        cfg.get_bool("pill_over_fullscreen"),
+                        placement::resolve_pill_dock(&cfg.get("pill_position"))
+                            == placement::PillDock::Notch,
+                    )
+                };
+                macos::configure_overlay_windows(app.handle(), over, notch);
             }
             Ok(())
         })
@@ -544,6 +697,7 @@ pub fn run() {
             cancel_record,
             set_pin,
             set_expanded,
+            set_glass_width,
             close_panel,
             begin_drag,
             pick_folder,
