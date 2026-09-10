@@ -114,6 +114,21 @@ the backdrop's appearance. The recording pill keeps a plain tint, since it
 is a moving capsule inside a larger transparent window, but wears the same
 rim so the two read as one material.
 
+## Recording pill
+
+On a MacBook with a notch the recording pill hangs from the notch itself,
+Dynamic Island style: black, flush with the cutout, at least as wide as it,
+rising out of it when a take starts. On a screen without a notch (an
+external display, or an older MacBook) the same setting places the pill
+flush under the top edge. Settings → Capture → Pill position switches
+between Notch, Top and Bottom; Top and Bottom keep the distance slider.
+
+The pill also shows over full-screen apps: it joins every Space at a level
+above full-screen windows, so a take started inside a full-screen app still
+has its indicator. Settings → Capture → "Show over full-screen apps" turns
+that off, leaving an ordinary floating pill on the current Space. The panel
+joins every Space too, so the panel shortcut works from a full-screen app.
+
 ## Permissions and first dictation
 
 The panel opens at launch. Close it to keep Tiro in the menu bar. Click its
@@ -168,6 +183,8 @@ the app in its final location; the login entry refers to that installed copy.
   writes `setup_done = true` to config.ini and the guide stays closed.
 - Right-clicking the menu bar icon shows the menu, and Settings… opens the
   panel on the Settings view.
+- Starting a take on the built-in display hangs the pill from the notch; the
+  same take inside a full-screen app still shows it.
 - The engine reports the actual CPU/GPU device and power state.
 - A spoken sentence reaches both the clipboard and transcript history.
 - Cancel discards the take, and push-to-talk stops on release.

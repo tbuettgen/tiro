@@ -182,10 +182,14 @@
               <button class="sw" id="swPill" role="switch" aria-checked="true" aria-label="Recording pill"></button>
             </div>
             <div class="row" id="rowPillPos">
-              <div class="lbl"><div class="name">Pill position</div></div>
+              <div class="lbl"><div class="name">Pill position</div><div class="sub only-mac">Notch hangs the pill from the camera cutout, like a Dynamic Island.</div></div>
               <div class="seg" data-seg="pillpos">
-                <button data-value="top">Top</button><button data-value="bottom" class="on">Bottom</button>
+                <button data-value="notch" class="only-mac">Notch</button><button data-value="top">Top</button><button data-value="bottom" class="on">Bottom</button>
               </div>
+            </div>
+            <div class="row" id="rowPillFs">
+              <div class="lbl"><div class="name">Show over full-screen apps</div><div class="sub">Keep the pill visible on every Space, including apps in full screen.</div></div>
+              <button class="sw" id="swPillFs" role="switch" aria-checked="true" aria-label="Show over full-screen apps"></button>
             </div>
             <div class="row" id="rowPillDist">
               <div class="lbl"><div class="name">Distance from edge</div></div>

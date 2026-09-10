@@ -542,8 +542,17 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Accessory NOW (runtime), so the windows built right after are
+            // created by an accessory app and can join full-screen Spaces
+            // (see macos::build_windows); and again for the run loop start,
+            // where tao would otherwise apply its Regular default.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            {
+                app.handle()
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                macos::build_windows(app)?;
+            }
             // On Linux the WebKitGTK widget reports a ~200 px minimum height,
             // so GTK refuses to make the pill window its configured 76 px.
             // Clear the size request on every descendant widget and re-apply
@@ -641,6 +650,22 @@ pub fn run() {
             // -> Liquid Glass); queued onto the main thread, never fatal.
             #[cfg(target_os = "macos")]
             glass::sync(app.handle());
+            // Window levels / Spaces: the pill over full-screen apps (when
+            // enabled), the panel reachable on every Space.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::Manager;
+                let (over, notch) = {
+                    let ctx = app.state::<flow::AppCtx>();
+                    let cfg = flow::lock(&ctx.cfg);
+                    (
+                        cfg.get_bool("pill_over_fullscreen"),
+                        placement::resolve_pill_dock(&cfg.get("pill_position"))
+                            == placement::PillDock::Notch,
+                    )
+                };
+                macos::configure_overlay_windows(app.handle(), over, notch);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

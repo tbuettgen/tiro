@@ -183,7 +183,7 @@
       powerMode: "auto", modelBattery: "base.en", modelPlugged: "small.en",
       model: "base.en", treatAsDesktop: MOCK_HW.treatAsDesktop,
       soundCues: true, volume: 60, recordingPill: true,
-      pillPosition: "bottom", pillPadding: 110,
+      pillPosition: "bottom", pillPadding: 110, pillOverFullscreen: true,
       clipboardCleanup: "light", smartVocab: true,
       micName: "MacBook Pro Microphone", launchAtLogin: true,
       saveTranscripts: true, savePath: "~/Documents/Tiro", transparency: 35,
@@ -1006,6 +1006,7 @@
     swSave: (on) => setSetting("saveTranscripts", on),
     swLogin: (on) => setSetting("launchAtLogin", on),
     swGlass: (on) => { setSetting("liquidGlass", on); applyGlass(); },
+    swPillFs: (on) => setSetting("pillOverFullscreen", on),
     /* live re-render: the Engine section swaps to the new machine kind at
        once; the backend hot-re-resolves the engine in the background */
     swDesktop: (on) => {
@@ -1024,8 +1025,12 @@
   });
   function syncPillRows() {
     const off = !swOn($("swPill"));
+    const on = document.querySelector('[data-seg="pillpos"] button.on');
+    /* a notch dock has no edge distance to tune */
+    const notch = !!(on && on.dataset.value === "notch");
     $("rowPillPos").classList.toggle("disabled", off);
-    $("rowPillDist").classList.toggle("disabled", off);
+    $("rowPillDist").classList.toggle("disabled", off || notch);
+    $("rowPillFs").classList.toggle("disabled", off);
   }
 
   /* segmented controls */
@@ -1041,7 +1046,7 @@
       /* desktop 2-way Compute: GPU stores "auto" (not "gpu") so the same
          config on a laptop keeps battery-aware switching instead of a force */
       if (seg.dataset.seg === "compute") { setSetting("powerMode", v === "cpu" ? "cpu" : "auto"); syncEngineRows(); updateEngine(); }
-      if (seg.dataset.seg === "pillpos") setSetting("pillPosition", v);
+      if (seg.dataset.seg === "pillpos") { setSetting("pillPosition", v); syncPillRows(); }
       if (seg.dataset.seg === "cleanup") { setSetting("clipboardCleanup", v); setCleanupCopy(v); }
       if (seg.dataset.seg === "theme") {
         setSetting("theme", v);
@@ -1786,7 +1791,9 @@
       $("volVal").textContent = s.volume + "%";
     }
     setSw($("swPill"), s.recordingPill);
-    segSet(document.querySelector('[data-seg="pillpos"]'), s.pillPosition === "top" ? "top" : "bottom");
+    segSet(document.querySelector('[data-seg="pillpos"]'),
+      (s.pillPosition === "top" || s.pillPosition === "notch") ? s.pillPosition : "bottom");
+    setSw($("swPillFs"), s.pillOverFullscreen !== false);
     if (typeof s.pillPadding === "number") {
       rngDist.max = String(Math.max(400, s.pillPadding));
       rngDist.value = s.pillPadding; syncFill(rngDist);

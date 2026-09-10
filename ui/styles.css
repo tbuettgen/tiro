@@ -397,3 +397,6 @@ html.glass .mic-menu, html.glass .ddmenu{ background:rgba(var(--glass-rgb), .985
 /* the Liquid Glass switch only exists where the backdrop does */
 #rowGlass{ display:none; }
 html.mac #rowGlass{ display:flex; }
+/* the full-screen switch only exists where Spaces do */
+#rowPillFs{ display:none; }
+html.mac #rowPillFs{ display:flex; }

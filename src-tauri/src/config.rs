@@ -72,6 +72,14 @@ pub const DEFAULT_TRANSPARENCY: &str = if cfg!(target_os = "macos") {
 };
 /// `DEFAULT_TRANSPARENCY` as the number the panel API clamps against.
 pub const DEFAULT_TRANSPARENCY_INT: i64 = if cfg!(target_os = "macos") { 70 } else { 45 };
+/// Default `pill_position`: on macOS the pill hangs from the notch (a
+/// screen without one places it flush under the top edge); elsewhere the
+/// historical bottom-center spot.
+pub const DEFAULT_PILL_POSITION: &str = if cfg!(target_os = "macos") {
+    "notch"
+} else {
+    "bottom"
+};
 
 /// The original's `DEFAULTS["general"]`, in the same order.
 pub fn defaults(app_dir: &Path) -> Vec<(&'static str, String)> {
@@ -100,11 +108,15 @@ pub fn defaults(app_dir: &Path) -> Vec<(&'static str, String)> {
         ("beeps", "true".into()),
         ("sound_volume", "1.0".into()),
         ("pill", "true".into()),
-        // Pill dock edge ("top" | "bottom") and its distance in px from that
-        // work-area edge. bottom/110 is the pre-setting fixed spot, so an
-        // untouched config places the pill exactly where it always was.
-        ("pill_position", "bottom".into()),
+        // Pill dock ("notch" | "top" | "bottom") and its distance in px from
+        // that work-area edge. bottom/110 is the pre-setting fixed spot, so
+        // an untouched config outside macOS places the pill exactly where
+        // it always was; macOS hangs it from the notch.
+        ("pill_position", DEFAULT_PILL_POSITION.into()),
         ("pill_padding", "110".into()),
+        // macOS: keep the pill visible on every Space, full-screen apps
+        // included (window level + collection behaviour). Inert elsewhere.
+        ("pill_over_fullscreen", "true".into()),
         ("clipboard_cleanup", "light".into()),
         ("use_vocab_bias", "true".into()),
         ("theme", "system".into()),
@@ -187,6 +199,19 @@ impl ConfigStore {
                             "panel_transparency".to_string(),
                             DEFAULT_TRANSPARENCY.to_string(),
                         );
+                        // The same one-time move takes a pill still at the
+                        // old default spot (bottom, 110 px — the values the
+                        // backfill wrote for everyone) to the notch; a pill
+                        // the user placed deliberately is left alone.
+                        if ini.get_from(Some(SECTION), "pill_position") == Some("bottom")
+                            && ini.get_from(Some(SECTION), "pill_padding") == Some("110")
+                        {
+                            ini.set_to(
+                                Some(SECTION),
+                                "pill_position".to_string(),
+                                DEFAULT_PILL_POSITION.to_string(),
+                            );
+                        }
                         changed = true;
                     }
                     for (key, value) in &defaults {
@@ -306,15 +331,35 @@ mod tests {
     fn pre_glass_config_moves_transparency_to_the_glass_default_once() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.ini");
-        std::fs::write(&path, "[general]\npanel_transparency = 0\ntheme = dark\n").unwrap();
+        std::fs::write(
+            &path,
+            "[general]\npanel_transparency = 0\ntheme = dark\npill_position = bottom\npill_padding = 110\n",
+        )
+        .unwrap();
         let cfg = load_in(&dir);
         if cfg!(target_os = "macos") {
             assert_eq!(cfg.get("panel_transparency"), DEFAULT_TRANSPARENCY);
             assert_eq!(cfg.get("liquid_glass"), "true");
+            assert_eq!(
+                cfg.get("pill_position"),
+                "notch",
+                "untouched pill moves to the notch"
+            );
         } else {
             assert_eq!(cfg.get("panel_transparency"), "0");
             assert_eq!(cfg.get("liquid_glass"), "false");
+            assert_eq!(cfg.get("pill_position"), "bottom");
         }
+        // a deliberately placed pill is never moved
+        let dir2 = TempDir::new().unwrap();
+        std::fs::write(
+            dir2.path().join("config.ini"),
+            "[general]\npill_position = top\npill_padding = 40\n",
+        )
+        .unwrap();
+        let cfg2 = load_in(&dir2);
+        assert_eq!(cfg2.get("pill_position"), "top");
+        assert_eq!(cfg2.get("pill_padding"), "40");
         assert_eq!(cfg.get("theme"), "dark", "unrelated keys untouched");
         // The key is now present, so a user's later choice survives reloads.
         let mut cfg = cfg;
@@ -345,7 +390,8 @@ mod tests {
         assert_eq!(cfg.get("theme"), "system");
         assert_eq!(cfg.get("panel_transparency"), DEFAULT_TRANSPARENCY);
         assert_eq!(cfg.get("setup_done"), "false");
-        assert_eq!(cfg.get("pill_position"), "bottom");
+        assert_eq!(cfg.get("pill_position"), DEFAULT_PILL_POSITION);
+        assert_eq!(cfg.get("pill_over_fullscreen"), "true");
         assert_eq!(cfg.get("pill_padding"), "110");
         assert_eq!(
             cfg.get("fallback_dir"),
@@ -436,7 +482,11 @@ mod tests {
         let cfg = ConfigStore::load(path, dir.path());
         assert_eq!(cfg.get("theme"), "light", "existing value preserved");
         assert_eq!(cfg.get("model_ac"), "small.en", "missing key backfilled");
-        assert_eq!(cfg.get("pill_position"), "bottom", "pill keys backfilled");
+        assert_eq!(
+            cfg.get("pill_position"),
+            DEFAULT_PILL_POSITION,
+            "pill keys backfilled"
+        );
         assert_eq!(cfg.get("pill_padding"), "110", "pill keys backfilled");
         let raw = fs::read_to_string(cfg.path()).unwrap();
         assert!(raw.contains("dictation_hotkey"), "backfill was persisted");

@@ -60,6 +60,11 @@ pub struct Placement {
     /// owned here because geometry queries on an unmapped window are
     /// unreliable.
     expanded: AtomicBool,
+    /// How the pill was last placed: the dock actually used (a "notch"
+    /// config falls back to "top" on a screen without one) and that
+    /// notch's width and height in logical px, so the pill window can
+    /// dress itself to match (`get_state` reports all three).
+    pill_look: Mutex<(&'static str, f64, f64)>,
 }
 
 fn state(app: &AppHandle) -> tauri::State<'_, Placement> {
@@ -167,18 +172,22 @@ pub(crate) fn remember_panel_now(app: &AppHandle) {
     }
 }
 
-/// `_active_work_area`: (left, top, right, bottom) of the active monitor's
-/// work area in physical pixels; None if every monitor query fails.
-fn active_work_area(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
-    let monitor = app
-        .cursor_position()
+/// The ACTIVE monitor: under the cursor, else the panel's, else primary.
+fn active_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
+    app.cursor_position()
         .ok()
         .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
         .or_else(|| {
             app.get_webview_window("panel")
                 .and_then(|w| w.current_monitor().ok().flatten())
         })
-        .or_else(|| app.primary_monitor().ok().flatten())?;
+        .or_else(|| app.primary_monitor().ok().flatten())
+}
+
+/// `_active_work_area`: (left, top, right, bottom) of the active monitor's
+/// work area in physical pixels; None if every monitor query fails.
+fn active_work_area(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
+    let monitor = active_monitor(app)?;
     let wa = monitor.work_area();
     Some((
         wa.position.x,
@@ -192,12 +201,54 @@ fn active_work_area(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
 /// Doubles as the `pill_padding` default so untouched configs are identical.
 const PILL_PADDING_DEFAULT: i32 = 110;
 
+/// Where the pill docks: the top or bottom work-area edge, or — macOS on a
+/// display with a notch — hanging from the notch itself, Dynamic Island
+/// style. On a screen without a notch `Notch` places like `Top` flush
+/// under the edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PillDock {
+    Top,
+    Bottom,
+    Notch,
+}
+
+impl PillDock {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            PillDock::Top => "top",
+            PillDock::Bottom => "bottom",
+            PillDock::Notch => "notch",
+        }
+    }
+}
+
+/// The configured dock; case/space-insensitive, anything unrecognized is
+/// the historical bottom. Pure, extracted for tests.
+pub(crate) fn resolve_pill_dock(position: &str) -> PillDock {
+    let p = position.trim();
+    if p.eq_ignore_ascii_case("top") {
+        PillDock::Top
+    } else if p.eq_ignore_ascii_case("notch") {
+        PillDock::Notch
+    } else {
+        PillDock::Bottom
+    }
+}
+
+/// The pill's last effective placement: (dock, notch width, notch height),
+/// the sizes in logical px.
+pub fn pill_look(app: &AppHandle) -> (&'static str, f64, f64) {
+    let (dock, width, height) = *lock(&state(app).pill_look);
+    (if dock.is_empty() { "bottom" } else { dock }, width, height)
+}
+
 /// Resolve the pill placement config values to (dock at top?, padding px).
 /// Anything unrecognized falls back to the historical default — bottom,
 /// 110 px — and a garbage padding never crashes (invalid -> default,
-/// negative -> 0). Pure, extracted for tests.
+/// negative -> 0). A notch dock counts as top here (its fallback edge).
+/// Pure, extracted for tests.
 pub(crate) fn resolve_pill_placement(position: &str, padding: &str) -> (bool, i32) {
-    let top = position.trim().eq_ignore_ascii_case("top");
+    let top = matches!(resolve_pill_dock(position), PillDock::Top | PillDock::Notch);
     let pad =
         crate::api::clamp_int_str(padding, 0, 100_000, i64::from(PILL_PADDING_DEFAULT)) as i32;
     (top, pad)
@@ -223,6 +274,76 @@ fn pill_spot(
     let x = ml + (mw - ww) / 2;
     let y = if top { mt + pad } else { mb - wh - pad };
     Some((x, y))
+}
+
+/// Where the pill window of width `ww` goes to grow out of a notch:
+/// centered on the cutout with its top edge on the very top of the screen,
+/// so the black shape the pill draws is continuous with the notch (the
+/// pill's CSS keeps its content below the notch band). `mon` is the
+/// monitor's physical origin; `notch` is (left, right, height) in points
+/// relative to that screen. Pure math, extracted for tests.
+fn notch_spot(mon: (i32, i32), scale: f64, notch: (f64, f64, f64), ww: i32) -> (i32, i32) {
+    let (left, right, _height) = notch;
+    let cx = mon.0 + (((left + right) / 2.0) * scale).round() as i32;
+    (cx - ww / 2, mon.1)
+}
+
+/// (monitor origin in physical px, scale, (left, right, height) of the
+/// notch in points relative to that screen).
+type ActiveNotch = ((i32, i32), f64, (f64, f64, f64));
+
+/// The active monitor's notch, if it has one.
+#[cfg(target_os = "macos")]
+fn active_notch(app: &AppHandle) -> Option<ActiveNotch> {
+    let m = active_monitor(app)?;
+    let (pos, size) = (m.position(), m.size());
+    let n = crate::macos::notch_for_monitor(pos.x, pos.y, size.width, size.height)?;
+    Some((
+        (pos.x, pos.y),
+        m.scale_factor(),
+        (n.left, n.right, n.height),
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn active_notch(_app: &AppHandle) -> Option<ActiveNotch> {
+    None
+}
+
+/// The pill's spot for `dock` on the active monitor, recording the look
+/// actually used. A notch dock needs the active screen to have one;
+/// otherwise the pill hangs flush under the top edge instead. Main thread.
+fn pill_place(
+    app: &AppHandle,
+    work: (i32, i32, i32, i32),
+    ww: i32,
+    wh: i32,
+    dock: PillDock,
+    pad: i32,
+) -> Option<(i32, i32)> {
+    let (spot, look) = match dock {
+        PillDock::Top => (pill_spot(work, ww, wh, true, pad), ("top", 0.0, 0.0)),
+        PillDock::Bottom => (pill_spot(work, ww, wh, false, pad), ("bottom", 0.0, 0.0)),
+        PillDock::Notch => match active_notch(app) {
+            Some((mon, scale, notch)) => (
+                Some(notch_spot(mon, scale, notch, ww)),
+                ("notch", notch.1 - notch.0, notch.2),
+            ),
+            None => (pill_spot(work, ww, wh, true, 0), ("top", 0.0, 0.0)),
+        },
+    };
+    let st = state(app);
+    let mut last = lock(&st.pill_look);
+    if *last != look {
+        // once per change of look, not per burst step: where the pill
+        // actually went (a notch config on a notchless screen says "top")
+        eprintln!(
+            "pill: dock={} spot={spot:?} notch={}x{}",
+            look.0, look.1, look.2
+        );
+    }
+    *last = look;
+    spot
 }
 
 /// Where a window of size (ww, wh) goes on the work area (l, t, r, b):
@@ -318,12 +439,14 @@ fn place_window(app: &AppHandle, label: &str) {
         return;
     };
     let spot = if label == "pill" {
-        let (top, pad) = {
+        let (dock, pad) = {
             let ctx = app.state::<AppCtx>();
             let cfg = lock(&ctx.cfg);
-            resolve_pill_placement(&cfg.get("pill_position"), &cfg.get("pill_padding"))
+            let (_, pad) =
+                resolve_pill_placement(&cfg.get("pill_position"), &cfg.get("pill_padding"));
+            (resolve_pill_dock(&cfg.get("pill_position")), pad)
         };
-        pill_spot(work, ww, wh, top, pad)
+        pill_place(app, work, ww, wh, dock, pad)
     } else {
         centered_spot(work, ww, wh)
     };
@@ -367,6 +490,9 @@ pub fn reposition_pill_if_visible(app: &AppHandle) {
         if let Some(w) = app.get_webview_window("pill") {
             if w.is_visible().unwrap_or(false) {
                 position(&app, "pill");
+                // the dock may have changed shape (notch <-> edge): let the
+                // pill re-read its look now instead of at the next show
+                let _ = w.eval("window.refreshLook&&window.refreshLook()");
             }
         }
     });
@@ -1136,6 +1262,28 @@ mod tests {
             pill_spot(work, 300, 88, true, -50),
             Some((810, 40)),
             "negative padding behaves as 0"
+        );
+    }
+
+    #[test]
+    fn pill_dock_resolution_and_notch_spot() {
+        assert_eq!(resolve_pill_dock("notch"), PillDock::Notch);
+        assert_eq!(resolve_pill_dock(" Notch "), PillDock::Notch);
+        assert_eq!(resolve_pill_dock("top"), PillDock::Top);
+        assert_eq!(resolve_pill_dock("bottom"), PillDock::Bottom);
+        assert_eq!(resolve_pill_dock("garbage"), PillDock::Bottom);
+        // a notch dock falls back to the top edge in the (top, pad) form
+        assert_eq!(resolve_pill_placement("notch", "5"), (true, 5));
+        // 2x screen at (0,0); notch 672..840 pt wide, 37 pt tall; window 300 px
+        assert_eq!(
+            notch_spot((0, 0), 2.0, (672.0, 840.0, 37.0), 300),
+            (1512 - 150, 0),
+            "centered on the cutout, top edge on the top of the screen"
+        );
+        // secondary monitor origin carries through at 1x
+        assert_eq!(
+            notch_spot((1920, 100), 1.0, (100.0, 200.0, 30.0), 300),
+            (1920 + 150 - 150, 100)
         );
     }
 

@@ -404,6 +404,7 @@ pub fn get_state(app: &AppHandle) -> Value {
     // enumeration, the theme portal query): a stale network mount must
     // never wedge sync main-thread commands blocking on the same lock.
     let cfg = lock(&ctx.cfg).clone();
+    let pill_look = crate::placement::pill_look(app);
     let (entries, settings, shortcuts, theme, effective) = {
         let entries: Vec<Value> = store::read_today_entries(&cfg, 200)
             .iter()
@@ -414,10 +415,11 @@ pub fn get_state(app: &AppHandle) -> Value {
         let (store_path, is_vault) = store::log_dir(&cfg)
             .map(|(p, v)| (p.to_string_lossy().into_owned(), v))
             .unwrap_or((String::new(), false));
-        let (pill_top, pill_padding) = crate::placement::resolve_pill_placement(
+        let (_, pill_padding) = crate::placement::resolve_pill_placement(
             &cfg.get("pill_position"),
             &cfg.get("pill_padding"),
         );
+        let pill_dock = crate::placement::resolve_pill_dock(&cfg.get("pill_position"));
         let settings = json!({
             "powerMode": device_to_powermode(&cfg.get("device")),
             "modelBattery": cfg.get("model_battery"),
@@ -427,8 +429,10 @@ pub fn get_state(app: &AppHandle) -> Value {
             "soundCues": cfg.get_bool("beeps"),
             "volume": volume_to_int(&cfg.get("sound_volume")),
             "recordingPill": cfg.get_bool("pill"),
-            "pillPosition": if pill_top { "top" } else { "bottom" },
+            "pillPosition": pill_dock.as_str(),
             "pillPadding": pill_padding,
+            // macOS: the pill joins full-screen Spaces above everything
+            "pillOverFullscreen": cfg.get_bool("pill_over_fullscreen"),
             "clipboardCleanup": cleanup_to_js(&cfg.get("clipboard_cleanup")),
             "smartVocab": cfg.get_bool("use_vocab_bias"),
             "micName": resolve_mic_name(&cfg),
@@ -488,6 +492,13 @@ pub fn get_state(app: &AppHandle) -> Value {
         // "macos" | "windows" | "linux": the panel keeps platform copy
         // (menu bar vs tray, permission prompts) out of guesswork
         "platform": std::env::consts::OS,
+        // how the pill was last placed: the dock actually used and, for a
+        // notch, the cutout's width — the pill window dresses to match
+        "pill": {
+            "dock": pill_look.0,
+            "notchWidth": pill_look.1,
+            "notchHeight": pill_look.2,
+        },
     })
 }
 
@@ -660,6 +671,7 @@ pub fn set_setting(app: &AppHandle, key: &str, value: &Value) -> Value {
     let ctx = app.state::<AppCtx>();
     let mut theme_changed = false;
     let mut glass_changed = false;
+    let mut overlay_changed = false;
     let mut pill_moved = false;
     let mut engine_reresolve = false;
     let mut gpu_pick: Option<usize> = None;
@@ -716,16 +728,20 @@ pub fn set_setting(app: &AppHandle, key: &str, value: &Value) -> Value {
             }
             "recordingPill" => cfg.set("pill", if truthy(value) { "true" } else { "false" }),
             "pillPosition" => {
-                let pos = if value
-                    .as_str()
-                    .is_some_and(|s| s.trim().eq_ignore_ascii_case("top"))
-                {
-                    "top"
-                } else {
-                    "bottom"
-                };
-                cfg.set("pill_position", pos);
+                let pos = crate::placement::resolve_pill_dock(value.as_str().unwrap_or(""));
+                cfg.set("pill_position", pos.as_str());
                 pill_moved = true;
+                // the notch dock draws over the menu bar band: window level
+                overlay_changed = true;
+            }
+            // macOS window level / Spaces for the pill; re-applied below,
+            // after the cfg lock is released.
+            "pillOverFullscreen" => {
+                cfg.set(
+                    "pill_over_fullscreen",
+                    if truthy(value) { "true" } else { "false" },
+                );
+                overlay_changed = true;
             }
             "pillPadding" => {
                 cfg.set("pill_padding", &clamp_int(value, 0, 1000, 110).to_string());
@@ -804,6 +820,23 @@ pub fn set_setting(app: &AppHandle, key: &str, value: &Value) -> Value {
     }
     #[cfg(not(target_os = "macos"))]
     let _ = glass_changed;
+    #[cfg(target_os = "macos")]
+    if overlay_changed {
+        let (over, notch) = {
+            let cfg = lock(&ctx.cfg);
+            (
+                cfg.get_bool("pill_over_fullscreen"),
+                crate::placement::resolve_pill_dock(&cfg.get("pill_position"))
+                    == crate::placement::PillDock::Notch,
+            )
+        };
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            crate::macos::configure_overlay_windows(&app2, over, notch);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = overlay_changed;
     if let Some(idx) = gpu_pick {
         match hw::snapshot().gpus.iter().find(|g| g.index == idx) {
             Some(g) => {
