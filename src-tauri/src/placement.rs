@@ -239,7 +239,32 @@ pub(crate) fn resolve_pill_dock(position: &str) -> PillDock {
 /// the sizes in logical px.
 pub fn pill_look(app: &AppHandle) -> (&'static str, f64, f64) {
     let (dock, width, height) = *lock(&state(app).pill_look);
-    (if dock.is_empty() { "bottom" } else { dock }, width, height)
+    if !dock.is_empty() {
+        return (dock, width, height);
+    }
+    // Not placed yet (no take since launch): report the configured dock so
+    // the pill's first entrance already comes from the right edge. A notch
+    // is only confirmed by a placement, so it reads as "notch" on macOS and
+    // as its top-edge fallback elsewhere.
+    let ctx = app.state::<AppCtx>();
+    let configured = resolve_pill_dock(&lock(&ctx.cfg).get("pill_position"));
+    let dock = match configured {
+        PillDock::Top => "top",
+        PillDock::Bottom => "bottom",
+        PillDock::Notch => {
+            if cfg!(target_os = "macos") {
+                "notch"
+            } else {
+                "top"
+            }
+        }
+    };
+    (dock, 0.0, 0.0)
+}
+
+/// Whether the UI is in the expanded (advanced) state right now.
+pub fn panel_expanded(app: &AppHandle) -> bool {
+    state(app).expanded.load(Ordering::SeqCst)
 }
 
 /// Resolve the pill placement config values to (dock at top?, padding px).
@@ -727,6 +752,11 @@ fn set_panel_expanded_native(app: &AppHandle, on: bool) {
         let _ = w.set_max_size(Some(size));
     }
     let _ = w.set_size(size);
+    // macOS: the native glass backdrop follows the CSS glass, not the
+    // window — the window is already at the new size while the surface
+    // is still animating its width (see glass::set_glass_width).
+    #[cfg(target_os = "macos")]
+    crate::glass::set_glass_width(app, f64::from(width), if on { 520 } else { 0 });
     if was == on {
         return; // idempotent re-apply: the width did not change
     }

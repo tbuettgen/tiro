@@ -194,11 +194,18 @@ impl ConfigStore {
                     if cfg!(target_os = "macos")
                         && ini.get_from(Some(SECTION), "liquid_glass").is_none()
                     {
-                        ini.set_to(
-                            Some(SECTION),
-                            "panel_transparency".to_string(),
-                            DEFAULT_TRANSPARENCY.to_string(),
-                        );
+                        // Only a transparency still at the pre-glass default
+                        // moves; a value the user tuned is theirs.
+                        if matches!(
+                            ini.get_from(Some(SECTION), "panel_transparency"),
+                            None | Some("45")
+                        ) {
+                            ini.set_to(
+                                Some(SECTION),
+                                "panel_transparency".to_string(),
+                                DEFAULT_TRANSPARENCY.to_string(),
+                            );
+                        }
                         // The same one-time move takes a pill still at the
                         // old default spot (bottom, 110 px — the values the
                         // backfill wrote for everyone) to the notch; a pill
@@ -212,6 +219,17 @@ impl ConfigStore {
                                 DEFAULT_PILL_POSITION.to_string(),
                             );
                         }
+                        changed = true;
+                    }
+                    // A config that predates the setup guide belongs to an
+                    // app that was already set up, so the guide stays closed
+                    // for it — except on macOS, where the one-time glass
+                    // move above is the moment to walk through the new menu
+                    // bar, notch and glass settings once.
+                    if !cfg!(target_os = "macos")
+                        && ini.get_from(Some(SECTION), "setup_done").is_none()
+                    {
+                        ini.set_to(Some(SECTION), "setup_done".to_string(), "true".to_string());
                         changed = true;
                     }
                     for (key, value) in &defaults {
@@ -333,7 +351,7 @@ mod tests {
         let path = dir.path().join("config.ini");
         std::fs::write(
             &path,
-            "[general]\npanel_transparency = 0\ntheme = dark\npill_position = bottom\npill_padding = 110\n",
+            "[general]\npanel_transparency = 45\ntheme = dark\npill_position = bottom\npill_padding = 110\n",
         )
         .unwrap();
         let cfg = load_in(&dir);
@@ -345,22 +363,33 @@ mod tests {
                 "notch",
                 "untouched pill moves to the notch"
             );
+            assert_eq!(
+                cfg.get("setup_done"),
+                "false",
+                "macOS walks through the new settings once"
+            );
         } else {
-            assert_eq!(cfg.get("panel_transparency"), "0");
+            assert_eq!(cfg.get("panel_transparency"), "45");
             assert_eq!(cfg.get("liquid_glass"), "false");
             assert_eq!(cfg.get("pill_position"), "bottom");
+            assert_eq!(
+                cfg.get("setup_done"),
+                "true",
+                "an existing config is already set up"
+            );
         }
-        // a deliberately placed pill is never moved
+        assert_eq!(cfg.get("theme"), "dark", "unrelated keys untouched");
+        // values the user tuned are never moved
         let dir2 = TempDir::new().unwrap();
         std::fs::write(
             dir2.path().join("config.ini"),
-            "[general]\npill_position = top\npill_padding = 40\n",
+            "[general]\npanel_transparency = 0\npill_position = top\npill_padding = 40\n",
         )
         .unwrap();
         let cfg2 = load_in(&dir2);
+        assert_eq!(cfg2.get("panel_transparency"), "0");
         assert_eq!(cfg2.get("pill_position"), "top");
         assert_eq!(cfg2.get("pill_padding"), "40");
-        assert_eq!(cfg.get("theme"), "dark", "unrelated keys untouched");
         // The key is now present, so a user's later choice survives reloads.
         let mut cfg = cfg;
         cfg.set("panel_transparency", "0");

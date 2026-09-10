@@ -11,7 +11,7 @@ have permission to install in the system Applications folder.
 
 No Rust, Node.js, Python, Homebrew, or terminal setup is needed to run Tiro.
 macOS 12 or newer is required. Choose arm64 for Apple Silicon, x86_64 for
-Intel, or universal for either. Build.txt identifies this package.
+Intel. Build.txt identifies this package.
 
 FIRST DICTATION
 The panel opens when Tiro starts. Allow Microphone access when requested.

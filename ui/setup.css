@@ -12,6 +12,9 @@
 /* the guide owns the surface while open; the panel underneath stays laid
    out (its controls are borrowed from there) but invisible */
 .panel.setup-open .hdr, .panel.setup-open .compact-body, .panel.setup-open .adv-body{ visibility:hidden; }
+/* the guide borrows the System section; its own "open the guide" row is
+   meaningless from inside the guide */
+.panel.setup-open #rowSetupAgain{ display:none; }
 
 /* rail */
 .setup-rail{

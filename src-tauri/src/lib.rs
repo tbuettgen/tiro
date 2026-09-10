@@ -58,6 +58,18 @@ fn set_setting(app: tauri::AppHandle, key: String, value: Value) -> Value {
     api::set_setting(&app, &key, &value)
 }
 
+/// The panel tells the backend the width its glass is animating to, so the
+/// native backdrop (macOS) follows the surface instead of the window: on a
+/// collapse the window keeps its expanded size until the CSS transition is
+/// over. No-op elsewhere.
+#[tauri::command]
+fn set_glass_width(app: tauri::AppHandle, width: f64) {
+    #[cfg(target_os = "macos")]
+    glass::set_glass_width(&app, width, 520);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, width);
+}
+
 #[tauri::command]
 fn list_mics() -> Vec<String> {
     audio::list_mic_names()
@@ -378,7 +390,13 @@ pub fn set_tray_state(app: &tauri::AppHandle, state: &str) {
     };
     if let (Some(buf), Some(set)) = (buf, icons) {
         let image = tauri::image::Image::new(buf, set.width, set.height);
-        if let Err(e) = tray.set_icon(Some(image)) {
+        // macOS: the template flag lives on the NSImage, so a plain swap
+        // would drop it and leave a black silhouette on a dark menu bar.
+        #[cfg(target_os = "macos")]
+        let swapped = tray.set_icon_with_as_template(Some(image), true);
+        #[cfg(not(target_os = "macos"))]
+        let swapped = tray.set_icon(Some(image));
+        if let Err(e) = swapped {
             eprintln!("tray icon swap failed: {e}");
         }
     }
@@ -418,7 +436,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "open" => hotkeys::dispatch(app, "panel"),
+            // "Show", not toggle: picked from the menu, the panel must never
+            // end up hidden (the icon's left click keeps the toggle).
+            "open" => hotkeys::panel_request(app, hotkeys::PanelCmd::Summon),
             "dictate" => hotkeys::dispatch(app, "dictate"),
             "settings" => open_panel_view(app, "settings"),
             "setup" => open_panel_setup(app),
@@ -677,6 +697,7 @@ pub fn run() {
             cancel_record,
             set_pin,
             set_expanded,
+            set_glass_width,
             close_panel,
             begin_drag,
             pick_folder,

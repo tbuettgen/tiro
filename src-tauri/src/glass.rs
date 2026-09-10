@@ -21,12 +21,13 @@ use std::ptr::NonNull;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::AnyClass;
+use objc2::runtime::AnyObject;
 use objc2::{msg_send, ClassType, MainThreadMarker};
 use objc2_app_kit::{
     NSAppearance, NSAutoresizingMaskOptions, NSView, NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
 };
-use objc2_foundation::{NSArray, NSRect, NSString};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 /// Corner radius of the panel glass (`--r-surface` in ui/styles.css).
@@ -89,9 +90,26 @@ unsafe fn backdrops(content: &NSView) -> Vec<Retained<NSView>> {
     found
 }
 
+/// The backdrop's frame for a glass `width` (logical px) inside `bounds`:
+/// hugging the window's right edge like the CSS surface does, full height.
+fn glass_frame(bounds: NSRect, width: f64) -> NSRect {
+    let w = width.min(bounds.size.width);
+    NSRect {
+        origin: NSPoint {
+            x: bounds.size.width - w,
+            y: 0.0,
+        },
+        size: NSSize {
+            width: w,
+            height: bounds.size.height,
+        },
+    }
+}
+
 /// Insert the backdrop under the window's webview, replacing any earlier
-/// one. Main thread only.
-pub fn apply(window: &WebviewWindow, radius: f64) -> Result<Backdrop, String> {
+/// one, sized to the glass `width` (logical px; the surface is narrower
+/// than the window while compact). Main thread only.
+pub fn apply(window: &WebviewWindow, radius: f64, width: f64) -> Result<Backdrop, String> {
     let mtm = MainThreadMarker::new().ok_or("glass: not on the main thread")?;
     let content = content_view(window)?;
     // SAFETY: main thread (checked above); `content` is the live content
@@ -101,7 +119,8 @@ pub fn apply(window: &WebviewWindow, radius: f64) -> Result<Backdrop, String> {
         for old in backdrops(content) {
             let _: () = msg_send![&*old, removeFromSuperview];
         }
-        let bounds: NSRect = msg_send![content, bounds];
+        let win_bounds: NSRect = msg_send![content, bounds];
+        let bounds = glass_frame(win_bounds, width);
         let (view, kind): (Retained<NSView>, Backdrop) = match AnyClass::get(GLASS_CLASS) {
             Some(cls) => {
                 let alloc: Allocated<NSView> = msg_send![cls, alloc];
@@ -122,7 +141,11 @@ pub fn apply(window: &WebviewWindow, radius: f64) -> Result<Backdrop, String> {
                 (Retained::into_super(view), Backdrop::Vibrancy)
             }
         };
-        let mask = NSAutoresizingMaskOptions::ViewWidthSizable
+        // Right-anchored with a fixed width: the window grows and shrinks
+        // natively around the glass, which animates its width on its own
+        // (`set_glass_width`), so the backdrop must never just fill the
+        // window — that is a blurred slab popping in beside the surface.
+        let mask = NSAutoresizingMaskOptions::ViewMinXMargin
             | NSAutoresizingMaskOptions::ViewHeightSizable;
         let _: () = msg_send![&*view, setAutoresizingMask: mask];
         let _: () = msg_send![
@@ -178,6 +201,42 @@ pub fn set_appearance(window: &WebviewWindow, dark: Option<bool>) -> Result<(), 
     Ok(())
 }
 
+/// Match the backdrop to the glass width (logical px), animating over `ms`
+/// when the CSS surface is animating too (0 snaps). Safe from any thread.
+pub fn set_glass_width(app: &AppHandle, width: f64, ms: u64) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let Some(panel) = app.get_webview_window("panel") else {
+            return;
+        };
+        let Ok(content) = content_view(&panel) else {
+            return;
+        };
+        // SAFETY: main thread; live content view; NSAnimationContext is a
+        // plain AppKit class and the animator proxy forwards setFrame:.
+        unsafe {
+            let bounds: NSRect = msg_send![content, bounds];
+            let frame = glass_frame(bounds, width);
+            let context = AnyClass::get(c"NSAnimationContext");
+            for view in backdrops(content) {
+                match (ms, context) {
+                    (0, _) | (_, None) => {
+                        let _: () = msg_send![&*view, setFrame: frame];
+                    }
+                    (ms, Some(cls)) => {
+                        let _: () = msg_send![cls, beginGrouping];
+                        let current: Retained<AnyObject> = msg_send![cls, currentContext];
+                        let _: () = msg_send![&*current, setDuration: ms as f64 / 1000.0];
+                        let animator: Retained<AnyObject> = msg_send![&*view, animator];
+                        let _: () = msg_send![&*animator, setFrame: frame];
+                        let _: () = msg_send![cls, endGrouping];
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Apply or remove the panel backdrop to match the `liquid_glass` setting,
 /// then pin its appearance to the configured theme. Safe to call from any
 /// thread; the AppKit work is queued onto the main thread. Failures are
@@ -202,7 +261,12 @@ pub fn sync(app: &AppHandle) {
             }
             return;
         }
-        match apply(&panel, PANEL_RADIUS) {
+        let width = if crate::placement::panel_expanded(&app) {
+            f64::from(crate::placement::PANEL_W_EXPANDED)
+        } else {
+            f64::from(crate::placement::PANEL_W_COMPACT)
+        };
+        match apply(&panel, PANEL_RADIUS, width) {
             Ok(kind) => eprintln!("glass: panel backdrop = {}", kind.as_str()),
             Err(e) => {
                 eprintln!("glass: apply failed: {e}");

@@ -255,7 +255,8 @@ function makeCanvas(w, h){
   return c;
 }
 function ink(a){
-  const dark = document.body.dataset.theme !== 'light';
+  /* the notch island is black in every theme */
+  const dark = document.body.dataset.pos === 'notch' || document.body.dataset.theme !== 'light';
   return (dark ? 'rgba(255,255,255,' : 'rgba(20,20,24,') + a + ')';
 }
 /* unified waveform — one canvas lives across recording ↔ transcribing;

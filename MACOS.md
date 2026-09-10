@@ -109,7 +109,9 @@ The panel uses a native glass backdrop: on macOS 26 and newer that is
 Liquid Glass, on macOS 12 through 15 the system HUD material. The
 Transparency slider in Settings → Appearance sets how much of the desktop
 shows through the tint; the Liquid Glass switch below it turns the backdrop
-off for a flat panel. The theme (light, dark or follow system) also sets
+off for a flat panel. The macOS default transparency is 70; upgrading from
+an earlier build moves only a value still at the old default (45) and keeps
+one you changed. The theme (light, dark or follow system) also sets
 the backdrop's appearance. The recording pill keeps a plain tint, since it
 is a moving capsule inside a larger transparent window, but wears the same
 rim so the two read as one material.

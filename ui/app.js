@@ -297,6 +297,7 @@
     cancel_record() { return Promise.resolve(null); },
     set_pin() { return Promise.resolve(null); },
     set_expanded() { return Promise.resolve(null); },
+    set_glass_width() { return Promise.resolve(null); },
     close_panel() { return Promise.resolve(null); },
     begin_drag() { return Promise.resolve(null); },
     pick_folder() { return Promise.resolve(null); },
@@ -900,6 +901,9 @@
         if (gen !== advGen) return;
         panel.classList.remove("advout", "adv");
         markSettle();
+        /* the native backdrop (macOS) shrinks with the glass, not with the
+           window, which only resizes after the settle below */
+        Promise.resolve(api.set_glass_width && api.set_glass_width(400)).catch(() => {});
         advTimer = setTimeout(() => {
           if (gen !== advGen) return;
           Promise.resolve(api.set_expanded && api.set_expanded(false)).catch(() => {});
@@ -1646,7 +1650,8 @@
   }
   let waveRunning = false;
   function waveVisible() {
-    return !document.hidden && App.adv && App.view === "settings";
+    return !document.hidden && App.adv &&
+      (App.view === "settings" || (setupOpen && SETUP_STEPS[setupStep].id === "audio"));
   }
   function kickWave() {
     if (waveRunning || !waveVisible()) return;
@@ -1980,7 +1985,8 @@
      ════════════════════════════════════════════════════════════════════ */
   /* tray / menu bar entries: bring a view up, or the setup guide */
   window.tiroOpenView = function (v) {
-    if (setupOpen) closeSetup(false);
+    /* the view opens expanded anyway: don't collapse on the way out */
+    if (setupOpen) { setupWasAdv = true; closeSetup(false); }
     setView(v);
     setAdv(true);
   };
