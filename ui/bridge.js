@@ -41,7 +41,9 @@
       stop_mic_monitor: function () { return invoke("stop_mic_monitor"); },
       set_vocab: function (hotwords, corrections) {
         return invoke("set_vocab", { hotwords: hotwords, corrections: corrections });
-      }
+      },
+      set_snippets: function (snippets) { return invoke("set_snippets", { snippets: snippets }); },
+      get_stats: function () { return invoke("get_stats"); }
     }
   };
 

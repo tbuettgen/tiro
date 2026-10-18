@@ -1,0 +1,9 @@
+// Your Apple developer team (Xcode > Settings > Accounts shows it), and the
+// app's bundle id. Bundle ids are global on Apple's side: if Xcode says this
+// one is taken, change it to something only you use (e.g. com.yourname.tiro).
+DEVELOPMENT_TEAM =
+TIRO_BUNDLE_ID = dev.tiro.ios
+TIRO_APP_GROUP = group.$(TIRO_BUNDLE_ID)
+
+// Local overrides that are never committed (team id, personal bundle id).
+#include? "Signing.local.xcconfig"

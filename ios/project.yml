@@ -1,0 +1,139 @@
+# Tiro for iOS. Generate the Xcode project with `xcodegen` in this folder
+# (scripts/bootstrap.sh does it, after fetching whisper.xcframework).
+#
+# Signing: put your team in Signing.xcconfig (DEVELOPMENT_TEAM) and, if the
+# default bundle id is taken, change TIRO_BUNDLE_ID there. Everything else
+# (keyboard id, app group) is derived from it.
+name: Tiro
+options:
+  bundleIdPrefix: dev.tiro
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Signing.xcconfig
+  Release: Signing.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+targets:
+  Tiro:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Shared
+    dependencies:
+      - framework: Vendor/whisper.xcframework
+        embed: true
+      - target: TiroKeyboard
+        embed: true
+    entitlements:
+      path: App/Tiro.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(TIRO_APP_GROUP)
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Tiro
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        TiroAppGroup: $(TIRO_APP_GROUP)
+        LSApplicationCategoryType: public.app-category.productivity
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Tiro listens only while you dictate, and turns your speech into text right on this iPhone. Audio never leaves the device.
+        UIBackgroundModes: [audio]
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.tiro.session
+            CFBundleURLSchemes: [tiro]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TIRO_BUNDLE_ID)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        OTHER_LDFLAGS: ["-lc++"]
+  TiroKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Keyboard
+      - path: Shared
+    entitlements:
+      path: Keyboard/TiroKeyboard.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(TIRO_APP_GROUP)
+    info:
+      path: Keyboard/Info.plist
+      properties:
+        CFBundleDisplayName: Tiro
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        TiroAppGroup: $(TIRO_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+          NSExtensionAttributes:
+            IsASCIICapable: false
+            PrefersRightToLeft: false
+            PrimaryLanguage: en-US
+            RequestsOpenAccess: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TIRO_BUNDLE_ID).keyboard
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: YES
+  TiroTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+      - path: ../spec/format_cases.json
+        buildPhase: resources
+    dependencies:
+      - target: Tiro
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TIRO_BUNDLE_ID).tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Tiro.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Tiro
+        BUNDLE_LOADER: $(TEST_HOST)
+  TiroUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Tiro
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TIRO_BUNDLE_ID).uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Tiro
+schemes:
+  Tiro:
+    build:
+      targets:
+        Tiro: all
+        TiroTests: [test]
+        TiroUITests: [test]
+    test:
+      targets: [TiroTests, TiroUITests]

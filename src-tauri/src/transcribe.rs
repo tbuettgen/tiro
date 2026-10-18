@@ -1,6 +1,6 @@
 //! CPU transcription via whisper-rs (whisper.cpp), mirroring the original's
-//! faster-whisper usage (PORTING_NOTES §5): 16 kHz f32 mono in, language=en,
-//! beam 1 on CPU, VAD enabled (whisper.cpp's integrated Silero VAD stands in
+//! faster-whisper usage (PORTING_NOTES §5): 16 kHz f32 mono in, the
+//! configured `language` (default en; `whisper_language`), beam 1 on CPU, VAD enabled (whisper.cpp's integrated Silero VAD stands in
 //! for faster-whisper's vad_filter), vocab bias as the initial prompt,
 //! segments joined with spaces and stripped. Models are GGUF files under
 //! `./models`, downloaded from huggingface.co/ggerganov/whisper.cpp on first
@@ -452,26 +452,46 @@ pub fn ensure_vad_model(models_dir: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// `get_vocab_prompt`: vocab.txt words joined into one whitespace-collapsed
-/// line, skipping blanks and `#` comments; None when disabled/missing/empty.
+/// The fixed spoken-command primer (spec "Initial prompt"). Without it
+/// Whisper often writes a spoken "comma" as a name ("Kama", measured on
+/// base.en), so the command never reaches the formatter.
+pub const COMMAND_PRIMER: &str =
+    "Comma, period, question mark, new line, new paragraph, scratch that.";
+
+/// `get_vocab_prompt`: whisper's initial prompt, built from two optional
+/// parts joined by one space (spec "Initial prompt"):
+/// 1. with `use_vocab_bias` on: the vocab.txt hot words (blanks and `#`
+///    comments skipped) in one whitespace-collapsed line, plus `.`;
+/// 2. with `spoken_commands` on and cleanup not `none`: `COMMAND_PRIMER`.
+///
+/// None when both parts are empty.
 pub fn get_vocab_prompt(app_dir: &Path, cfg: &ConfigStore) -> Option<String> {
-    if !cfg.get_bool("use_vocab_bias") {
-        return None;
+    let mut parts: Vec<String> = Vec::new();
+    if cfg.get_bool("use_vocab_bias") {
+        let raw = fs::read_to_string(app_dir.join("vocab.txt")).unwrap_or_default();
+        let words: Vec<&str> = raw
+            .lines()
+            .filter(|ln| !ln.trim().is_empty() && !ln.trim_start().starts_with('#'))
+            .collect();
+        let txt = words
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !txt.is_empty() {
+            parts.push(format!("{txt}."));
+        }
     }
-    let raw = fs::read_to_string(app_dir.join("vocab.txt")).ok()?;
-    let words: Vec<&str> = raw
-        .lines()
-        .filter(|ln| !ln.trim().is_empty() && !ln.trim_start().starts_with('#'))
-        .collect();
-    let txt = words
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if txt.is_empty() {
+    if cfg.get_bool("spoken_commands")
+        && crate::format::Cleanup::from_cfg(&cfg.get("clipboard_cleanup"))
+            != crate::format::Cleanup::None
+    {
+        parts.push(COMMAND_PRIMER.to_string());
+    }
+    if parts.is_empty() {
         None
     } else {
-        Some(txt)
+        Some(parts.join(" "))
     }
 }
 
@@ -560,6 +580,32 @@ pub fn collapse_non_speech(text: &str) -> &str {
     ""
 }
 
+/// Is `model` an English-only checkpoint (`base.en`, `small.en`, ...)?
+pub fn is_english_only(model: &str) -> bool {
+    model.trim().to_lowercase().ends_with(".en")
+}
+
+/// The whisper language for a take (spec "Languages"): config `language`
+/// is `en` (default), `auto`, or a Whisper language code. English-only
+/// models always run with `en`; `auto` lets whisper pick per take (with
+/// `detect_language` off — on, whisper.cpp would detect and then STOP).
+/// Anything whisper does not know falls back to `en` rather than failing
+/// every take; full names ("german") are folded to their code.
+pub fn whisper_language(setting: &str, model: &str) -> String {
+    if is_english_only(model) {
+        return "en".into();
+    }
+    let lang = setting.trim().to_lowercase().replace('\0', "");
+    match lang.as_str() {
+        "" | "en" => "en".into(),
+        "auto" => "auto".into(),
+        _ => whisper_rs::get_lang_id(&lang)
+            .and_then(whisper_rs::get_lang_str)
+            .unwrap_or("en")
+            .to_string(),
+    }
+}
+
 /// A loaded CPU whisper model.
 pub struct Transcriber {
     ctx: WhisperContext,
@@ -598,18 +644,21 @@ impl Transcriber {
     }
 
     /// Transcribe 16 kHz mono f32 samples; join segment texts with spaces
-    /// and strip, exactly like the original `_do_transcribe`.
+    /// and strip, exactly like the original `_do_transcribe`. `language` is
+    /// a resolved `whisper_language` value (`en`, `auto`, `de`, ...).
     pub fn transcribe(
         &self,
         samples: &[f32],
         beam: usize,
         vocab: Option<&str>,
+        language: &str,
     ) -> Result<String, String> {
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
             beam_size: beam as std::ffi::c_int,
             patience: -1.0,
         });
-        params.set_language(Some("en"));
+        params.set_language(Some(language));
+        params.set_detect_language(false);
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -655,7 +704,7 @@ impl Transcriber {
     /// and verify the device actually works.
     pub fn warm_up(&self) -> Result<(), String> {
         let silence = vec![0.0f32; SAMPLE_RATE as usize];
-        self.transcribe(&silence, 1, None).map(|_| ())
+        self.transcribe(&silence, 1, None, "en").map(|_| ())
     }
 }
 
@@ -747,33 +796,38 @@ pub fn transcribe_test(wav_path: &str) {
         eprintln!("ERROR: warm-up failed: {e}");
         return;
     }
-    // The REAL vocab path: the same prompt the live take pipeline feeds
-    // whisper (vocab.txt via use_vocab_bias), logged so tests can assert
+    // The REAL prompt path: the same initial prompt the live take pipeline
+    // feeds whisper (vocab.txt via use_vocab_bias, plus the spoken-command
+    // primer), logged so tests can assert
     // the bias is actually wired without depending on model output.
     let vocab = get_vocab_prompt(&app_dir, &cfg);
     match &vocab {
         Some(p) => eprintln!("vocab prompt: {p}"),
-        None => eprintln!("vocab prompt: (none — bias off or vocab.txt empty)"),
+        None => eprintln!("vocab prompt: (none — no hot words and no command primer)"),
     }
+    let language = whisper_language(&cfg.get("language"), &model);
+    eprintln!("language: {language}");
     let start = std::time::Instant::now();
-    match transcriber.transcribe(&audio, 1, vocab.as_deref()) {
+    match transcriber.transcribe(&audio, 1, vocab.as_deref(), &language) {
         Ok(text) => {
             eprintln!("transcribed in {:.2} s", start.elapsed().as_secs_f32());
             println!("TEXT: {text}");
-            // Mirror the live take's clipboard layer (flow::transcribe_worker):
-            // cleanup per clipboard_cleanup, then corrections.txt — so the
-            // whole chain is provable headless. TEXT above stays verbatim,
-            // exactly like the transcript log.
-            let cleanup_mode = cfg.get("clipboard_cleanup");
-            let corrections = crate::vocab::read_corrections(&app_dir);
+            // Mirror the live take's delivered layer (flow::transcribe_worker):
+            // format::format_text with the config options, corrections.txt
+            // and snippets.txt — so the whole chain is provable headless.
+            // TEXT above stays verbatim, exactly like the transcript log.
+            let mut opts = crate::format::FormatOptions::from_config(&cfg);
+            opts.corrections = crate::vocab::read_corrections(&app_dir);
+            opts.snippets = crate::vocab::read_snippets(&app_dir);
             eprintln!(
-                "cleanup mode: {cleanup_mode}; corrections: {}",
-                corrections.len()
+                "cleanup: {}; spoken commands: {}; style: {}; corrections: {}; snippets: {}",
+                cfg.get("clipboard_cleanup"),
+                opts.spoken_commands,
+                opts.style.as_str(),
+                opts.corrections.len(),
+                opts.snippets.len()
             );
-            let clean = crate::vocab::apply_corrections(
-                &crate::clipboard::clipboard_text(&text, &cleanup_mode),
-                &corrections,
-            );
+            let clean = crate::format::format_text(&text, &opts);
             println!("CLEAN: {clean}");
         }
         Err(e) => eprintln!("ERROR: {e}"),
@@ -973,6 +1027,24 @@ mod tests {
     }
 
     #[test]
+    fn language_resolution_follows_the_spec() {
+        // English-only models always run English
+        assert_eq!(whisper_language("de", "base.en"), "en");
+        assert_eq!(whisper_language("auto", "small.EN"), "en");
+        // multilingual models honor the setting
+        assert_eq!(whisper_language("en", "small"), "en");
+        assert_eq!(whisper_language("", "small"), "en");
+        assert_eq!(whisper_language("auto", "large-v3-turbo"), "auto");
+        assert_eq!(whisper_language(" DE ", "small"), "de");
+        assert_eq!(whisper_language("es", "medium"), "es");
+        // whisper's full names fold to the code; unknown falls back to en
+        assert_eq!(whisper_language("german", "small"), "de");
+        assert_eq!(whisper_language("klingon", "small"), "en");
+        assert!(is_english_only("tiny.en"));
+        assert!(!is_english_only("large-v3"));
+    }
+
+    #[test]
     fn vocab_prompt_skips_comments_and_blanks() {
         let dir = TempDir::new().unwrap();
         std::fs::write(
@@ -980,10 +1052,11 @@ mod tests {
             "# names\nTiro\n\n  # tools\nWhisper   cpal\n",
         )
         .unwrap();
-        let cfg = ConfigStore::load(dir.path().join("config.ini"), dir.path());
+        let mut cfg = ConfigStore::load(dir.path().join("config.ini"), dir.path());
+        cfg.set("spoken_commands", "false");
         assert_eq!(
             get_vocab_prompt(dir.path(), &cfg),
-            Some("Tiro Whisper cpal".to_string())
+            Some("Tiro Whisper cpal.".to_string())
         );
     }
 
@@ -991,6 +1064,7 @@ mod tests {
     fn vocab_prompt_none_when_disabled_or_missing() {
         let dir = TempDir::new().unwrap();
         let mut cfg = ConfigStore::load(dir.path().join("config.ini"), dir.path());
+        cfg.set("spoken_commands", "false");
         assert_eq!(get_vocab_prompt(dir.path(), &cfg), None, "no vocab.txt");
         std::fs::write(dir.path().join("vocab.txt"), "word\n").unwrap();
         cfg.set("use_vocab_bias", "false");
@@ -1001,6 +1075,55 @@ mod tests {
             get_vocab_prompt(dir.path(), &cfg),
             None,
             "empty after filter"
+        );
+    }
+
+    /// The four combinations of the spec's two prompt parts.
+    #[test]
+    fn initial_prompt_combines_hot_words_and_command_primer() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("vocab.txt"), "Tiro\nPipeWire\n").unwrap();
+        let mut cfg = ConfigStore::load(dir.path().join("config.ini"), dir.path());
+        // hot words + primer (the defaults: bias on, commands on, light)
+        assert_eq!(
+            get_vocab_prompt(dir.path(), &cfg).as_deref(),
+            Some(
+                "Tiro PipeWire. Comma, period, question mark, new line, \
+                 new paragraph, scratch that."
+            )
+        );
+        // hot words only
+        cfg.set("spoken_commands", "false");
+        assert_eq!(
+            get_vocab_prompt(dir.path(), &cfg).as_deref(),
+            Some("Tiro PipeWire.")
+        );
+        // primer only
+        cfg.set("spoken_commands", "true");
+        cfg.set("use_vocab_bias", "false");
+        assert_eq!(
+            get_vocab_prompt(dir.path(), &cfg).as_deref(),
+            Some(COMMAND_PRIMER)
+        );
+        // neither
+        cfg.set("spoken_commands", "false");
+        assert_eq!(get_vocab_prompt(dir.path(), &cfg), None);
+    }
+
+    #[test]
+    fn command_primer_needs_cleanup_on() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = ConfigStore::load(dir.path().join("config.ini"), dir.path());
+        cfg.set("clipboard_cleanup", "none");
+        assert_eq!(
+            get_vocab_prompt(dir.path(), &cfg),
+            None,
+            "cleanup off: no primer"
+        );
+        cfg.set("clipboard_cleanup", "fillers");
+        assert_eq!(
+            get_vocab_prompt(dir.path(), &cfg).as_deref(),
+            Some(COMMAND_PRIMER)
         );
     }
 }

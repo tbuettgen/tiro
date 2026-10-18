@@ -95,6 +95,14 @@ pub fn defaults(app_dir: &Path) -> Vec<(&'static str, String)> {
         ("pill_position", "bottom".into()),
         ("pill_padding", "110".into()),
         ("clipboard_cleanup", "light".into()),
+        // Delivered-text formatting (format.rs / spec/FLOW_FEATURES.md):
+        // spoken "new line" / "comma" / "scratch that", and the writing
+        // style: formal | casual | very_casual.
+        ("spoken_commands", "true".into()),
+        ("style", "formal".into()),
+        // Transcription language: en | auto | a Whisper code (es, de, ...).
+        // English-only models (*.en) always run with en.
+        ("language", "en".into()),
         ("use_vocab_bias", "true".into()),
         ("theme", "system".into()),
         ("panel_transparency", "8".into()),
@@ -285,6 +293,8 @@ mod tests {
         assert_eq!(cfg.get("mic_name"), "");
         assert_eq!(cfg.get("sound_volume"), "1.0");
         assert_eq!(cfg.get("clipboard_cleanup"), "light");
+        assert_eq!(cfg.get("style"), "formal");
+        assert_eq!(cfg.get("language"), "en");
         assert_eq!(cfg.get("theme"), "system");
         assert_eq!(cfg.get("panel_transparency"), "8");
         assert!(!cfg.get_bool("autostart_bootstrapped"));
@@ -301,6 +311,7 @@ mod tests {
             "beeps",
             "pill",
             "use_vocab_bias",
+            "spoken_commands",
             "save_transcripts",
             "auto_restart",
         ] {

@@ -16,7 +16,9 @@ use tauri::{AppHandle, Manager};
 use crate::audio;
 use crate::config::ConfigStore;
 use crate::flow::{self, lock, AppCtx};
+use crate::format;
 use crate::hw;
+use crate::stats;
 use crate::store;
 use crate::transcribe;
 
@@ -56,6 +58,15 @@ pub fn cleanup_to_cfg(val: &str) -> &'static str {
         "fillers" => "fillers",
         _ => "light",
     }
+}
+
+/// UI/cfg `language` -> the stored value: `en`, `auto`, or a code whisper
+/// knows (full names fold to the code); anything else is `en`, so a bad
+/// value can never fail every take. The English-only-model rule is applied
+/// per take (`transcribe::whisper_language`), not here — the setting
+/// survives a switch back to a multilingual model.
+pub fn language_to_cfg(val: &str) -> String {
+    transcribe::whisper_language(val, "")
 }
 
 /// `_volume_to_int`: cfg `sound_volume` (0.0-1.0 string) -> 0-100 for the UI.
@@ -437,6 +448,9 @@ pub fn get_state(app: &AppHandle) -> Value {
             "pillPosition": if pill_top { "top" } else { "bottom" },
             "pillPadding": pill_padding,
             "clipboardCleanup": cleanup_to_js(&cfg.get("clipboard_cleanup")),
+            "spokenCommands": cfg.get_bool("spoken_commands"),
+            "style": format::Style::from_cfg(&cfg.get("style")).as_str(),
+            "language": language_to_cfg(&cfg.get("language")),
             "smartVocab": cfg.get_bool("use_vocab_bias"),
             "micName": resolve_mic_name(&cfg),
             "launchAtLogin": launch_at_login_enabled(app),
@@ -503,6 +517,14 @@ pub fn history_entries(app: &AppHandle, day: &str) -> Value {
         .map(|r| store::entry_from_rec(r, &cfg))
         .collect();
     json!(entries)
+}
+
+/// `get_stats`: the Transcribe page's stats strip (words, takes, WPM, time
+/// saved, day streak) over every transcript day on disk.
+pub fn get_stats(app: &AppHandle) -> Value {
+    let ctx = app.state::<AppCtx>();
+    let cfg = lock(&ctx.cfg).clone(); // snapshot: no lock across disk IO
+    stats::collect(&cfg).to_json()
 }
 
 /// The `_ack` payload every `set_setting` returns.
@@ -729,6 +751,17 @@ pub fn set_setting(app: &AppHandle, key: &str, value: &Value) -> Value {
                 "clipboard_cleanup",
                 cleanup_to_cfg(value.as_str().unwrap_or("")),
             ),
+            "spokenCommands" => cfg.set(
+                "spoken_commands",
+                if truthy(value) { "true" } else { "false" },
+            ),
+            "style" => cfg.set(
+                "style",
+                format::Style::from_cfg(value.as_str().unwrap_or("")).as_str(),
+            ),
+            // Read per take, so the next dictation picks it up — no engine
+            // reload needed (the language is a per-request parameter).
+            "language" => cfg.set("language", &language_to_cfg(&as_cfg_str(value))),
             "smartVocab" => cfg.set(
                 "use_vocab_bias",
                 if truthy(value) { "true" } else { "false" },
@@ -867,6 +900,16 @@ mod tests {
         assert_eq!(device_to_powermode("garbage"), "auto");
         assert_eq!(powermode_to_device("garbage"), "auto");
         assert_eq!(device_to_powermode("CUDA"), "gpu", "case-insensitive");
+    }
+
+    #[test]
+    fn language_values_are_validated() {
+        assert_eq!(language_to_cfg("en"), "en");
+        assert_eq!(language_to_cfg("AUTO"), "auto");
+        assert_eq!(language_to_cfg("fr"), "fr");
+        assert_eq!(language_to_cfg("spanish"), "es");
+        assert_eq!(language_to_cfg("zz"), "en");
+        assert_eq!(language_to_cfg(""), "en");
     }
 
     #[test]

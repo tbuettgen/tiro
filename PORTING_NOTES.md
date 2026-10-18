@@ -104,6 +104,9 @@ Data-loss guarantees to preserve:
 | `sound_volume` | `1.0` | 0.0–1.5 clamped |
 | `pill` | `true` | show pill |
 | `clipboard_cleanup` | `light` | `none`/`light`/`fillers` |
+| `spoken_commands` | `true` | **PORT (post-parity):** "new line"/"comma"/"scratch that" etc. in the delivered copy (spec/FLOW_FEATURES.md) |
+| `style` | `formal` | **PORT (post-parity):** `formal`/`casual`/`very_casual` |
+| `language` | `en` | **PORT (post-parity):** `en`/`auto`/Whisper code; `*.en` models always `en`; sent as the worker header's `language` |
 | `use_vocab_bias` | `true` | prime Whisper with `vocab.txt` (skip blanks and `#` comments) |
 | `theme` | `system` | `system`/`light`/`dark` |
 | `panel_transparency` | `45` | 0–100 → alpha 0.95–0.30 |

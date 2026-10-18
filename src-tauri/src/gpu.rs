@@ -281,17 +281,21 @@ impl GpuWorker {
     /// treat this worker as lost (kill it and retry the SAME audio on CPU
     /// — a take can never be lost to the GPU path). Holds `io` for the
     /// whole request; concurrent callers serialize here.
+    ///
+    /// `language` is a resolved `transcribe::whisper_language` value; the
+    /// worker re-applies the English-only-model rule on its side too.
     pub fn transcribe(
         &self,
         audio16: &[f32],
         beam: usize,
         vocab: Option<&str>,
+        language: &str,
     ) -> Result<String, String> {
         let header = serde_json::to_vec(&json!({
             "samples": audio16.len(),
             "beam": beam,
             "vocab": vocab,
-            "language": "en",
+            "language": language,
         }))
         .map_err(|e| e.to_string())?;
         let mut io = lock(&self.io);
@@ -437,7 +441,7 @@ pub fn gpu_test(wav: &str, device: &str) {
         worker.alive()
     );
     let t1 = Instant::now();
-    match worker.transcribe(&audio16, 5, None) {
+    match worker.transcribe(&audio16, 5, None, "en") {
         Ok(text) => eprintln!("[{:.1}s] text: {text}", t1.elapsed().as_secs_f64()),
         Err(e) => eprintln!("transcribe failed: {e}"),
     }

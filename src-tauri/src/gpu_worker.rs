@@ -28,7 +28,9 @@
 //!
 //!   request   <u32 header_len> <header JSON, utf-8> <float32 PCM bytes>
 //!             header = {"samples": N, "beam": int, "vocab": str|null,
-//!             "language": "en"}; N little-endian f32 samples @ 16 kHz.
+//!             "language": "en"|"auto"|<whisper code>}; N little-endian f32
+//!             samples @ 16 kHz. A missing language means "en", and an
+//!             English-only model (*.en) always runs "en".
 //!
 //!   response  <u32 len> <JSON, utf-8>
 //!             {"ok": true, "segments": ["text", ...]} or
@@ -219,10 +221,12 @@ pub fn run(argv: &[String]) -> i32 {
             .collect();
         let beam = req["beam"].as_u64().unwrap_or(5) as usize;
         let vocab = req["vocab"].as_str().filter(|v| !v.is_empty());
+        let language =
+            transcribe::whisper_language(req["language"].as_str().unwrap_or("en"), model_name);
 
         // Report a failure but stay alive — one bad request shouldn't cost
         // the parent a worker respawn.
-        let reply = match transcriber.transcribe(&audio, beam, vocab) {
+        let reply = match transcriber.transcribe(&audio, beam, vocab, &language) {
             Ok(text) => json!({ "ok": true, "segments": [text] }),
             Err(e) => {
                 log(&format!("TRANSCRIBE ERROR: {e}"));

@@ -10,6 +10,7 @@ pub mod clipboard;
 pub mod config;
 pub mod cues;
 pub mod flow;
+pub mod format;
 pub mod gpu;
 pub mod gpu_worker;
 pub mod hotkeys;
@@ -21,6 +22,7 @@ pub mod inject;
 pub mod macos;
 pub mod placement;
 pub mod power;
+pub mod stats;
 pub mod store;
 pub mod transcribe;
 pub mod vocab;
@@ -139,6 +141,19 @@ fn list_vocab() -> Value {
 #[tauri::command]
 fn set_vocab(hotwords: Value, corrections: Value) -> Value {
     vocab::set(&flow::app_dir(), &hotwords, &corrections)
+}
+
+#[tauri::command]
+fn set_snippets(snippets: Value) -> Value {
+    vocab::set_snippets(&flow::app_dir(), &snippets)
+}
+
+// Reads every transcript day on disk — spawn_blocking like get_state.
+#[tauri::command]
+async fn get_stats(app: tauri::AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || api::get_stats(&app))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // Opening the mic can take a moment and sync commands run inline on the
@@ -568,6 +583,8 @@ pub fn run() {
             history_entries,
             list_vocab,
             set_vocab,
+            set_snippets,
+            get_stats,
             start_mic_monitor,
             stop_mic_monitor,
             list_models,

@@ -80,6 +80,13 @@
 
       <!-- TRANSCRIBE VIEW -->
       <div class="view" id="view-history">
+        <div class="stats" id="statsStrip" role="group" aria-label="Dictation stats">
+          <div class="stat"><span class="sv" id="stWords">0</span><span class="sl">Words</span></div>
+          <div class="stat"><span class="sv" id="stTakes">0</span><span class="sl">Takes</span></div>
+          <div class="stat"><span class="sv" id="stWpm">0</span><span class="sl">WPM</span></div>
+          <div class="stat" title="Compared with typing at 40 words per minute"><span class="sv" id="stSaved">0 min</span><span class="sl">Time saved</span></div>
+          <div class="stat"><span class="sv" id="stStreak">0</span><span class="sl">Day streak</span></div>
+        </div>
         <div class="toolbar">
           <span class="search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -146,6 +153,10 @@
               <div class="lbl"><div class="name">Model when plugged in</div></div>
               <span class="selwrap"><select class="sel" id="selPlugged"></select></span>
             </div>
+            <div class="row" id="rowLanguage">
+              <div class="lbl"><div class="name">Language</div><div class="sub" id="langSub">The language you dictate in, or let Whisper detect it per take.</div></div>
+              <span class="selwrap"><select class="sel" id="selLang"></select></span>
+            </div>
             <div class="row" id="rowDesktop" style="display:none;">
               <div class="lbl"><div class="name">Treat as desktop</div><div class="sub">Ignore battery state — always use plugged-in behavior.</div></div>
               <button class="sw" id="swDesktop" role="switch" aria-checked="false" aria-label="Treat as desktop"></button>
@@ -200,6 +211,19 @@
               </div>
               <div class="seg" data-seg="cleanup">
                 <button data-value="off">Off</button><button data-value="light" class="on">Light</button><button data-value="fillers">+ Fillers</button>
+              </div>
+            </div>
+            <div class="row" id="rowSpoken">
+              <div class="lbl"><div class="name">Spoken commands</div><div class="sub">Say “new line”, “comma”, “period” or “scratch that” while you dictate.</div></div>
+              <button class="sw" id="swSpoken" role="switch" aria-checked="true" aria-label="Spoken commands"></button>
+            </div>
+            <div class="row" id="rowStyle">
+              <div class="lbl">
+                <div class="name">Style</div>
+                <div class="sub" id="styleSub">Full sentences: capitals and a closing period.</div>
+              </div>
+              <div class="seg" data-seg="style">
+                <button data-value="formal" class="on">Formal</button><button data-value="casual">Casual</button><button data-value="very_casual">Very casual</button>
               </div>
             </div>
             <div class="row">
@@ -330,6 +354,24 @@
               </button>
             </div>
           </div>
+        </section>
+
+        <section class="grp">
+          <h2 class="grp-title">Snippets</h2>
+          <p class="grp-lede">Snippets turn a cue phrase into text you use often.</p>
+          <div class="card">
+            <div id="snipList"></div>
+            <div class="vempty" id="snipEmpty">No snippets yet. Save your email, address or sign-off once and say it from then on.</div>
+            <div class="cadd sadd hair">
+              <input class="vinput" id="sTrigger" placeholder="When I say…" autocomplete="off" spellcheck="false">
+              <svg class="arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              <textarea class="vinput vtext" id="sExpansion" rows="2" placeholder="insert…" spellcheck="false"></textarea>
+              <button class="ghost" id="sAddBtn" title="Add snippet" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+            </div>
+          </div>
+          <p class="grp-help">Say just the cue to get the text on its own, or say it mid-sentence to drop it in. <span id="snipKeyHint">Ctrl+Enter</span> adds a snippet; Enter starts a new line.</p>
         </section>
 
       </div>

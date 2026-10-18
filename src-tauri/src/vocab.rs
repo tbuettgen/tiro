@@ -1,9 +1,12 @@
 //! The Vocabulary editor's storage: hot words live in `vocab.txt` (the same
 //! file the transcription bias prompt reads — one word/phrase per line,
 //! `#` comments preserved), corrections in `corrections.txt` (one
-//! `heard => written` per line). Both sit next to config.ini in the app
-//! dir. Corrections are applied as post-replacements to the CLIPBOARD text
-//! only — the verbatim transcript is always logged unchanged.
+//! `heard => written` per line), snippets in `snippets.txt` (one
+//! `trigger => expansion` per line, newlines in the expansion written as
+//! `\n` and a literal backslash as `\\`). All three sit next to config.ini
+//! in the app dir. Corrections and snippets only ever shape the DELIVERED
+//! text (format.rs steps 9-10) — the verbatim transcript is always logged
+//! unchanged.
 
 use std::fs;
 use std::path::Path;
@@ -12,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{json, Value};
 
 const CORRECTIONS_FILE: &str = "corrections.txt";
+const SNIPPETS_FILE: &str = "snippets.txt";
 const VOCAB_FILE: &str = "vocab.txt";
 
 /// Sequence for unique sibling temp names (concurrent saves must not share
@@ -67,6 +71,63 @@ pub fn read_corrections(app_dir: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A snippet expansion as stored on its one line: a backslash becomes
+/// `\\` and a newline `\n` (a CR is dropped — CRLF pastes from Windows
+/// apps must not leave stray `\r`s in the delivered text).
+fn escape_expansion(s: &str) -> String {
+    s.replace('\r', "")
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+}
+
+/// The inverse of `escape_expansion`. A backslash before anything else is
+/// kept literally (a hand-edited `C:\temp` survives).
+fn unescape_expansion(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some('n') => {
+                    chars.next();
+                    out.push('\n');
+                    continue;
+                }
+                Some('\\') => {
+                    chars.next();
+                    out.push('\\');
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Snippets from `snippets.txt`: `trigger => expansion` pairs, in file
+/// order, expansions unescaped. Split on the FIRST arrow (a trigger never
+/// holds one — `clean_term` scrubs it — so an expansion may). Lines
+/// without the arrow, or with an empty side, are skipped like corrections.
+pub fn read_snippets(app_dir: &Path) -> Vec<(String, String)> {
+    let raw = fs::read_to_string(app_dir.join(SNIPPETS_FILE)).unwrap_or_default();
+    raw.lines()
+        .filter_map(|ln| {
+            let ln = ln.trim();
+            if ln.is_empty() || ln.starts_with('#') {
+                return None;
+            }
+            let (trigger, expansion) = ln.split_once("=>")?;
+            let (trigger, expansion) = (trigger.trim(), expansion.trim());
+            if trigger.is_empty() || expansion.is_empty() {
+                return None;
+            }
+            Some((trigger.to_string(), unescape_expansion(expansion)))
+        })
+        .collect()
+}
+
 /// Rewrite `vocab.txt` with the given hot words, keeping any leading `#`
 /// comment block (the file doubles as user-editable documentation).
 fn write_hotwords(app_dir: &Path, words: &[String]) -> std::io::Result<()> {
@@ -97,13 +158,29 @@ fn write_corrections(app_dir: &Path, pairs: &[(String, String)]) -> std::io::Res
     write_atomic(&app_dir.join(CORRECTIONS_FILE), &out)
 }
 
+fn write_snippets(app_dir: &Path, pairs: &[(String, String)]) -> std::io::Result<()> {
+    let mut out = String::new();
+    for (trigger, expansion) in pairs {
+        out.push_str(&format!("{trigger} => {}\n", escape_expansion(expansion)));
+    }
+    write_atomic(&app_dir.join(SNIPPETS_FILE), &out)
+}
+
 /// `list_vocab`: the editor's snapshot.
 pub fn list(app_dir: &Path) -> Value {
     let corrections: Vec<Value> = read_corrections(app_dir)
         .into_iter()
         .map(|(h, w)| json!([h, w]))
         .collect();
-    json!({ "hotwords": read_hotwords(app_dir), "corrections": corrections })
+    let snippets: Vec<Value> = read_snippets(app_dir)
+        .into_iter()
+        .map(|(t, e)| json!([t, e]))
+        .collect();
+    json!({
+        "hotwords": read_hotwords(app_dir),
+        "corrections": corrections,
+        "snippets": snippets,
+    })
 }
 
 /// A bridge string with the newline/arrow characters that would corrupt the
@@ -155,11 +232,62 @@ pub fn set(app_dir: &Path, hotwords: &Value, corrections: &Value) -> Value {
     json!({ "ok": ok })
 }
 
-/// Apply the `heard => written` corrections to `text` (the clipboard-bound
+/// A bridge-supplied expansion: multi-line text kept (CRLF folded to LF),
+/// outer whitespace trimmed; empty means "drop this snippet".
+fn clean_expansion(v: &Value) -> Option<String> {
+    let s = v.as_str()?.replace("\r\n", "\n").replace('\r', "\n");
+    let s = s.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// `set_snippets`: persist the full snippet list (same full-snapshot
+/// contract as `set_vocab`). Triggers get the line-safe `clean_term`
+/// scrub; expansions keep their line breaks via the file escapes.
+pub fn set_snippets(app_dir: &Path, snippets: &Value) -> Value {
+    let pairs: Vec<(String, String)> = snippets
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| {
+                    let arr = p.as_array()?;
+                    Some((clean_term(arr.first()?)?, clean_expansion(arr.get(1)?)?))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let ok = match write_snippets(app_dir, &pairs) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("snippets.txt write failed: {e}");
+            false
+        }
+    };
+    json!({ "ok": ok })
+}
+
+/// Apply the `heard => written` corrections to `text` (the delivered
 /// string): case-insensitive whole-phrase matches, replaced in file order.
 /// Never returns an empty string for non-empty input — a pathological rule
 /// set falls back to the uncorrected text (never lose a take).
 pub fn apply_corrections(text: &str, pairs: &[(String, String)]) -> String {
+    let out = replace_phrases(text, pairs);
+    if out.trim().is_empty() {
+        text.to_string()
+    } else {
+        out
+    }
+}
+
+/// The literal-phrase replacer shared by corrections and inline snippets
+/// (format.rs steps 9-10): each `(from, to)` pair, in order, is a
+/// case-insensitive literal match of `from`, with `\b` only on the sides
+/// of `from` that start or end with a word character; `to` is inserted
+/// literally.
+pub fn replace_phrases(text: &str, pairs: &[(String, String)]) -> String {
     if pairs.is_empty() || text.is_empty() {
         return text.to_string();
     }
@@ -193,11 +321,7 @@ pub fn apply_corrections(text: &str, pairs: &[(String, String)]) -> String {
                 .into_owned();
         }
     }
-    if out.trim().is_empty() {
-        text.to_string()
-    } else {
-        out
-    }
+    out
 }
 
 #[cfg(test)]
@@ -371,5 +495,93 @@ mod tests {
             read_corrections(dir.path()),
             [("he ard".into(), "writ ten".into())]
         );
+    }
+
+    #[test]
+    fn snippets_round_trip_multiline_and_backslashes() {
+        let dir = TempDir::new().unwrap();
+        let r = set_snippets(
+            dir.path(),
+            &json!([
+                ["sign off", "Best,\nTrevor"],
+                ["my path", "C:\\Users\\me\\new"],
+                ["crlf", "a\r\nb"],
+                ["arrow", "x => y"]
+            ]),
+        );
+        assert_eq!(r["ok"], true);
+        let raw = fs::read_to_string(dir.path().join(SNIPPETS_FILE)).unwrap();
+        assert_eq!(
+            raw,
+            "sign off => Best,\\nTrevor\n\
+             my path => C:\\\\Users\\\\me\\\\new\n\
+             crlf => a\\nb\n\
+             arrow => x => y\n",
+            "one line per snippet, escapes per the spec"
+        );
+        assert_eq!(
+            read_snippets(dir.path()),
+            [
+                ("sign off".into(), "Best,\nTrevor".into()),
+                ("my path".into(), "C:\\Users\\me\\new".into()),
+                ("crlf".into(), "a\nb".into()),
+                ("arrow".into(), "x => y".into()),
+            ]
+        );
+        let v = list(dir.path());
+        assert_eq!(v["snippets"][0], json!(["sign off", "Best,\nTrevor"]));
+    }
+
+    #[test]
+    fn snippets_skip_comments_blanks_and_malformed_lines() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(SNIPPETS_FILE),
+            "# my snippets\n\nmy email => trevor@example.com\nno arrow\n => no trigger\n\
+             empty =>   \nodd \\q => keeps \\q and \\\\\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_snippets(dir.path()),
+            [
+                ("my email".into(), "trevor@example.com".into()),
+                ("odd \\q".into(), "keeps \\q and \\".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn snippet_triggers_are_scrubbed_and_empties_dropped() {
+        let dir = TempDir::new().unwrap();
+        set_snippets(
+            dir.path(),
+            &json!([
+                ["#sig\nnature", "x"],
+                ["a => b", "y"],
+                ["", "z"],
+                ["blank", "  \n  "],
+                "not a pair"
+            ]),
+        );
+        assert_eq!(
+            read_snippets(dir.path()),
+            [
+                ("sig nature".into(), "x".into()),
+                ("a b".into(), "y".into()),
+            ]
+        );
+        assert!(list(dir.path())["snippets"].is_array());
+        // a missing file reads as empty
+        let empty = TempDir::new().unwrap();
+        assert!(read_snippets(empty.path()).is_empty());
+        assert_eq!(list(empty.path())["snippets"], json!([]));
+    }
+
+    #[test]
+    fn replace_phrases_has_no_blank_guard() {
+        // the guard lives in apply_corrections only
+        let pairs = vec![("um".to_string(), " ".to_string())];
+        assert_eq!(replace_phrases("um", &pairs), " ");
+        assert_eq!(apply_corrections("um", &pairs), "um");
     }
 }

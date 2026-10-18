@@ -32,6 +32,20 @@ So Tiro splits the talking from the delivery. It records, transcribes locally wi
 
 The key you *finish* on decides. Everything reaches the clipboard either way, so pasting is an extra on top, never a replacement.
 
+## What it does to your words
+
+The copy you paste gets a light tidy, all on device. The log always keeps exactly what you said.
+
+|  |  |
+|---|---|
+| **Spoken commands** | Say "new line", "new paragraph", "comma", "period", "question mark", "colon" and friends, or "scratch that" to drop the sentence you just said. |
+| **Styles** | Formal (capitals, closing period), Casual (no closing period), or Very casual (lowercase sentence starts too; "I", names and acronyms stay). |
+| **Snippets** | Say a cue like "my email" and get the saved text, on its own or mid-sentence. Multi-line works, so a sign-off can be one. |
+| **Languages** | English by default, or any Whisper language, or auto-detect per take. Needs a multilingual model (no `.en`). |
+| **Stats** | Words, takes, words per minute, time saved against typing at 40 WPM, and your day streak, at the top of the Transcribe page. |
+
+The same rules run in the iOS port; both are tested against the shared vectors in [`spec/`](spec/FLOW_FEATURES.md).
+
 ## Hotkeys
 
 | Key | Action |
@@ -50,9 +64,9 @@ All four are rebindable.
 |  |  |
 |---|---|
 | <img src="docs/transcribe.png" alt="Transcribe"> | <img src="docs/settings.png" alt="Settings"> |
-| **Transcribe.** Search back through everything you've dictated. Opens on today and streams older days in as you scroll. | **Settings.** Engine, audio, capture, input, shortcuts, storage, appearance, login. |
+| **Transcribe.** Stats up top, then search back through everything you've dictated. Opens on today and streams older days in as you scroll. | **Settings.** Engine and language, audio, capture (cleanup, spoken commands, style), input, shortcuts, storage, appearance, login. |
 | <img src="docs/vocabulary.png" alt="Vocabulary"> | <img src="docs/models.png" alt="Models"> |
-| **Vocabulary.** Hot words prime Whisper so it spells your names right. Corrections fix what it still misses, and only touch the copy you paste. | **Models.** Manage the transcription models installed on device, tiny through large-v3-turbo from Hugging Face. |
+| **Vocabulary.** Hot words prime Whisper so it spells your names right. Corrections fix what it still misses, and snippets expand a cue phrase into saved text. Both only touch the copy you paste. | **Models.** Manage the transcription models installed on device, tiny through large-v3-turbo from Hugging Face. |
 
 There's a tray icon too: left click toggles the panel, right click gives you Open, Start/Stop, Restart, Quit. On a Mac it lives in the menu bar.
 
@@ -71,7 +85,7 @@ The same install should do the right thing on every kind of machine without you 
 
 ## Nothing gets lost
 
-Every take is written verbatim to one JSONL and one Markdown file per day. Clipboard cleanup and corrections change only the copy you paste, never the log. If that folder isn't writable, Tiro falls back to its own folder and says so in the panel.
+Every take is written verbatim to one JSONL and one Markdown file per day. Cleanup, spoken commands, style, corrections and snippets change only the copy you paste, never the log. A take you "scratch" entirely is still logged; it just isn't copied. If that folder isn't writable, Tiro falls back to its own folder and says so in the panel.
 
 The one time it touches the network is downloading a model, and only when you ask. No accounts, no telemetry.
 

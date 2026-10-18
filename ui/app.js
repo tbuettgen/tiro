@@ -182,7 +182,8 @@
       model: "base.en", treatAsDesktop: MOCK_HW.treatAsDesktop,
       soundCues: true, volume: 60, recordingPill: true,
       pillPosition: "bottom", pillPadding: 110,
-      clipboardCleanup: "light", smartVocab: true,
+      clipboardCleanup: "light", spokenCommands: true, style: "formal",
+      language: "en", smartVocab: true,
       micName: "MacBook Pro Microphone", launchAtLogin: true,
       saveTranscripts: true, savePath: "~/Documents/Tiro", transparency: 8,
       storageFallback: false, storagePath: ""
@@ -212,7 +213,8 @@
     ],
     vocab: {
       hotwords: ["Beckett", "Tiro", "Tauri", "joycon", "PipeWire", "Fedora", "MedStar", "OLED", "Vulkan", "whisper"],
-      corrections: [["jira", "Jira"], ["tyro", "Tiro"], ["pipe wire", "PipeWire"], ["joy con", "Joy-Con"], ["med star", "MedStar"]]
+      corrections: [["jira", "Jira"], ["tyro", "Tiro"], ["pipe wire", "PipeWire"], ["joy con", "Joy-Con"], ["med star", "MedStar"]],
+      snippets: [["my email", "beckett@example.com"], ["sign off", "Thanks,\nBeckett"]]
     }
   };
 
@@ -319,8 +321,33 @@
     },
     list_vocab() { return Promise.resolve(clone(this._state.vocab)); },
     set_vocab(hotwords, corrections) {
-      this._state.vocab = { hotwords: clone(hotwords), corrections: clone(corrections) };
+      this._state.vocab.hotwords = clone(hotwords);
+      this._state.vocab.corrections = clone(corrections);
       return Promise.resolve({ ok: true });
+    },
+    set_snippets(snippets) {
+      this._state.vocab.snippets = clone(snippets);
+      return Promise.resolve({ ok: true });
+    },
+    get_stats() {
+      /* same definitions as the backend (spec "Stats"), over the mock log */
+      let words = 0, secs = 0;
+      MOCK_ENTRIES.forEach((e) => {
+        words += e.text.split(/\s+/).filter(Boolean).length;
+        const p = e.dur.split(":").map(Number);
+        secs += p[0] * 60 + p[1];
+      });
+      const days = MOCK_ENTRIES.map((e) => e.day);
+      let streak = 0;
+      const d = new Date();
+      if (days.indexOf(isoDay(d)) < 0) d.setDate(d.getDate() - 1);
+      while (days.indexOf(isoDay(d)) >= 0) { streak++; d.setDate(d.getDate() - 1); }
+      return Promise.resolve({
+        words: words, takes: MOCK_ENTRIES.length,
+        wpm: secs ? Math.round(words / secs * 60) : 0,
+        minutesSaved: Math.max(0, words / 40 - secs / 60),
+        streak: streak
+      });
     },
     list_models() { return Promise.resolve(clone(this._state.models)); },
     download_model(name) {
@@ -371,7 +398,8 @@
     view: "settings",
     models: [],
     modelProgress: {},           // model name -> latest progress payload
-    vocab: { hotwords: [], corrections: [] },
+    vocab: { hotwords: [], corrections: [], snippets: [] },
+    stats: null,
     days: [],                    // iso days, newest first; [0] is always today
     dayIdx: 0,                   // day the jumper points at (scroll-spied)
     histTop: 0,                  // index of the newest day section in the DOM
@@ -927,6 +955,7 @@
       App.dayIdx = 0;
       /* the render waits out any in-flight expand transition */
       loadDays().then(() => afterSettle(renderAdv));
+      refreshStats();
     }
     if (v === "vocab") loadVocab();
     if (v === "models") refreshModels();
@@ -994,6 +1023,7 @@
     swCues: (on) => { setSetting("soundCues", on); $("rowVolume").classList.toggle("disabled", !on); },
     swPill: (on) => { setSetting("recordingPill", on); syncPillRows(); },
     swVocab: (on) => setSetting("smartVocab", on),
+    swSpoken: (on) => setSetting("spokenCommands", on),
     swSave: (on) => setSetting("saveTranscripts", on),
     swLogin: (on) => setSetting("launchAtLogin", on),
     /* live re-render: the Engine section swaps to the new machine kind at
@@ -1032,7 +1062,8 @@
          config on a laptop keeps battery-aware switching instead of a force */
       if (seg.dataset.seg === "compute") { setSetting("powerMode", v === "cpu" ? "cpu" : "auto"); syncEngineRows(); updateEngine(); }
       if (seg.dataset.seg === "pillpos") setSetting("pillPosition", v);
-      if (seg.dataset.seg === "cleanup") { setSetting("clipboardCleanup", v); setCleanupCopy(v); }
+      if (seg.dataset.seg === "cleanup") { setSetting("clipboardCleanup", v); setCleanupCopy(v); syncFormatRows(); }
+      if (seg.dataset.seg === "style") { setSetting("style", v); setStyleCopy(v); }
       if (seg.dataset.seg === "theme") {
         setSetting("theme", v);
         if (v === "light" || v === "dark") applyTheme(v);
@@ -1054,6 +1085,28 @@
       cleanupSub.textContent = cleanupCopy[mode] || cleanupCopy.light;
       cleanupSub.classList.remove("swapping");
     }, 170);
+  }
+
+  /* writing style — dynamic helper copy */
+  const styleCopy = {
+    formal: "Full sentences: capitals and a closing period.",
+    casual: "Drops the closing period, like a chat message.",
+    very_casual: "Lowercase sentence starts and no closing period — names and “I” stay."
+  };
+  const styleSub = $("styleSub");
+  function setStyleCopy(style) {
+    styleSub.classList.add("swapping");
+    setTimeout(() => {
+      styleSub.textContent = styleCopy[style] || styleCopy.formal;
+      styleSub.classList.remove("swapping");
+    }, 170);
+  }
+  /* spoken commands + style are part of cleanup: with cleanup Off the
+     backend delivers the text as said (corrections and snippets only) */
+  function syncFormatRows() {
+    const off = (App.settings.clipboardCleanup || "light") === "off";
+    $("rowSpoken").classList.toggle("disabled", off);
+    $("rowStyle").classList.toggle("disabled", off);
   }
 
   /* sliders: track fill + readouts */
@@ -1157,20 +1210,67 @@
   $("selBattery").addEventListener("change", function () {
     setSetting("modelBattery", this.options[this.selectedIndex].text);
     updateEngine();
+    syncLanguage();
   });
   $("selPlugged").addEventListener("change", function () {
     setSetting("modelPlugged", this.options[this.selectedIndex].text);
     updateEngine();
+    syncLanguage();
   });
   $("selModel").addEventListener("change", function () {
     setSetting("model", this.options[this.selectedIndex].text);
     updateEngine();
+    syncLanguage();
   });
   $("selGpu").addEventListener("change", function () {
     const g = (App.hardware.gpus || [])[this.selectedIndex];
     if (!g) return;
     App.hardware.gpuDevice = g.index;
     setSetting("gpuDevice", g.index);
+  });
+
+  /* transcription language: English, auto-detect, then common Whisper
+     languages; the option VALUE is the code the backend stores */
+  const LANGUAGES = [
+    ["en", "English"], ["auto", "Auto-detect"],
+    ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"],
+    ["pt", "Portuguese"], ["nl", "Dutch"], ["sv", "Swedish"], ["no", "Norwegian"],
+    ["da", "Danish"], ["fi", "Finnish"], ["pl", "Polish"], ["cs", "Czech"],
+    ["uk", "Ukrainian"], ["ru", "Russian"], ["el", "Greek"], ["tr", "Turkish"],
+    ["ar", "Arabic"], ["he", "Hebrew"], ["hi", "Hindi"], ["id", "Indonesian"],
+    ["vi", "Vietnamese"], ["zh", "Chinese"], ["ja", "Japanese"], ["ko", "Korean"]
+  ];
+  const selLang = $("selLang");
+  function syncLanguage() {
+    const want = App.settings.language || "en";
+    const opts = LANGUAGES.slice();
+    if (!opts.some((o) => o[0] === want)) opts.push([want, want]); /* hand-set code */
+    const key = opts.map((o) => o[0]).join(" ") + "" + want;
+    if (selLang.__filled !== key) {
+      selLang.__filled = key;
+      selLang.innerHTML = "";
+      opts.forEach((o) => {
+        const opt = document.createElement("option");
+        opt.value = o[0];
+        opt.textContent = o[1];
+        opt.selected = o[0] === want;
+        selLang.appendChild(opt);
+      });
+      if (selLang.__ddRefresh) selLang.__ddRefresh();
+    }
+    /* English-only (.en) models ignore the setting — say so instead of
+       silently transcribing English */
+    const models = [App.settings.modelBattery, App.settings.modelPlugged, App.settings.model, App.engine.model];
+    const enOnly = want !== "en" && models.some((m) => /\.en$/i.test(m || ""));
+    $("langSub").textContent = enOnly
+      ? "English-only models (.en) always transcribe English — pick a multilingual model for this language."
+      : "The language you dictate in, or let Whisper detect it per take.";
+  }
+  selLang.addEventListener("change", function () {
+    const opt = this.options[this.selectedIndex];
+    if (!opt) return;
+    setSetting("language", opt.value);
+    syncLanguage();
   });
 
   /* model select options: installed models plus the configured values */
@@ -1472,15 +1572,20 @@
   function persistVocab() {
     Promise.resolve(api.set_vocab && api.set_vocab(App.vocab.hotwords, App.vocab.corrections)).catch(() => {});
   }
+  function persistSnippets() {
+    Promise.resolve(api.set_snippets && api.set_snippets(App.vocab.snippets)).catch(() => {});
+  }
   function loadVocab() {
     Promise.resolve(api.list_vocab && api.list_vocab()).then((v) => {
       if (!v) return;
       App.vocab = {
         hotwords: Array.isArray(v.hotwords) ? v.hotwords : [],
-        corrections: Array.isArray(v.corrections) ? v.corrections : []
+        corrections: Array.isArray(v.corrections) ? v.corrections : [],
+        snippets: Array.isArray(v.snippets) ? v.snippets : []
       };
       renderHw();
       renderCorr();
+      renderSnip();
     }).catch(() => {});
   }
   function renderHw(newIdx) {
@@ -1556,6 +1661,98 @@
     });
   });
   cAddBtn.addEventListener("click", commitCorr);
+
+  /* snippets: a trigger phrase -> saved (possibly multi-line) text */
+  function renderSnip(newIdx) {
+    const listBox = $("snipList");
+    listBox.innerHTML = "";
+    App.vocab.snippets.forEach((p, i) => {
+      const r = document.createElement("div");
+      r.className = "crow srow" + (i > 0 ? " hair" : "") + (i === newIdx ? " landing" : "");
+      r.innerHTML = '<span class="heard"></span>' + arrSvg + '<span class="written"></span>' +
+        '<button class="ghost del" title="Delete">' + xSvg + "</button>";
+      r.querySelector(".heard").textContent = p[0];
+      r.querySelector(".written").textContent = p[1];
+      r.querySelector(".del").addEventListener("click", () => {
+        App.vocab.snippets.splice(i, 1);
+        persistSnippets();
+        renderSnip();
+      });
+      listBox.appendChild(r);
+    });
+    $("snipEmpty").style.display = App.vocab.snippets.length ? "none" : "block";
+  }
+  const sTrigger = $("sTrigger"), sExpansion = $("sExpansion"), sAddBtn = $("sAddBtn");
+  if (isMac) $("snipKeyHint").textContent = "⌘ Enter";
+  function snipReady() { return !!(sTrigger.value.trim() && sExpansion.value.trim()); }
+  function syncSnipBtn() { sAddBtn.disabled = !snipReady(); }
+  function commitSnip() {
+    const trigger = sTrigger.value.trim();
+    const expansion = sExpansion.value.replace(/\r\n?/g, "\n").trim();
+    /* one snippet per cue: re-adding a trigger replaces its text */
+    const at = App.vocab.snippets.findIndex((p) => p[0].toLowerCase() === trigger.toLowerCase());
+    if (at >= 0) App.vocab.snippets.splice(at, 1);
+    App.vocab.snippets.push([trigger, expansion]);
+    persistSnippets();
+    renderSnip(App.vocab.snippets.length - 1);
+    sTrigger.value = ""; sExpansion.value = "";
+    syncSnipBtn();
+    sTrigger.focus();
+  }
+  sTrigger.addEventListener("input", syncSnipBtn);
+  sExpansion.addEventListener("input", syncSnipBtn);
+  sTrigger.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (snipReady()) commitSnip();
+    else if (sTrigger.value.trim()) sExpansion.focus();
+  });
+  sExpansion.addEventListener("keydown", (e) => {
+    /* plain Enter is a line break inside the snippet; Ctrl/⌘+Enter adds */
+    if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    if (snipReady()) commitSnip();
+  });
+  sAddBtn.addEventListener("click", commitSnip);
+
+  /* ════════════════════════════════════════════════════════════════════
+     STATS STRIP (Transcribe page)
+     ════════════════════════════════════════════════════════════════════ */
+  function fmtCount(n) {
+    n = Math.max(0, Math.round(n || 0));
+    if (n >= 100000) return Math.round(n / 1000) + "k";
+    if (n >= 10000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+    return n.toLocaleString();
+  }
+  function fmtSaved(min) {
+    min = Math.max(0, min || 0);
+    if (min < 60) return Math.round(min) + " min";
+    return (min / 60).toFixed(min < 600 ? 1 : 0).replace(/\.0$/, "") + " h";
+  }
+  function renderStats() {
+    const st = App.stats;
+    if (!st) return;
+    $("stWords").textContent = fmtCount(st.words);
+    $("stTakes").textContent = fmtCount(st.takes);
+    $("stWpm").textContent = fmtCount(st.wpm);
+    $("stSaved").textContent = fmtSaved(st.minutesSaved);
+    $("stStreak").textContent = fmtCount(st.streak);
+  }
+  let statsTimer = null;
+  function refreshStats() {
+    clearTimeout(statsTimer);
+    statsTimer = null;
+    Promise.resolve(api.get_stats && api.get_stats()).then((st) => {
+      if (!st) return;
+      App.stats = st;
+      renderStats();
+    }).catch(() => {});
+  }
+  /* a burst of takes re-reads the log once */
+  function refreshStatsSoon() {
+    clearTimeout(statsTimer);
+    statsTimer = setTimeout(refreshStats, 400);
+  }
 
   /* ════════════════════════════════════════════════════════════════════
      RECORD BUTTONS
@@ -1780,6 +1977,11 @@
     syncPillRows();
     segSet(document.querySelector('[data-seg="cleanup"]'), s.clipboardCleanup || "light");
     cleanupSub.textContent = cleanupCopy[s.clipboardCleanup] || cleanupCopy.light;
+    setSw($("swSpoken"), s.spokenCommands !== false);
+    segSet(document.querySelector('[data-seg="style"]'), s.style || "formal");
+    styleSub.textContent = styleCopy[s.style] || styleCopy.formal;
+    syncFormatRows();
+    syncLanguage();
     setSw($("swVocab"), s.smartVocab);
     setSw($("swSave"), s.saveTranscripts !== false);
     setSw($("swLogin"), s.launchAtLogin);
@@ -1831,6 +2033,7 @@
   window.tiroAddEntry = function (entry) {
     if (!entry) return;
     App.entries.unshift(entry);
+    refreshStatsSoon();
     panel.classList.remove("is-empty");
     listEl.prepend(makeEntry(entry, true));
     if (App.adv && App.view === "history" && !searchInput.value.trim()) {
@@ -1949,6 +2152,7 @@
       refreshModels();
       loadVocab();
       loadDays();
+      refreshStats();
     }).catch(() => {
       ingestState(MOCK_STATE);
       renderAll();

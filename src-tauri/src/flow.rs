@@ -7,8 +7,11 @@
 //! - cancel during recording discards audio; cancel during transcription
 //!   sets a flag the worker checks before copy/log (STATE-2); idle cancel
 //!   is a pure no-op
-//! - the verbatim text is always logged; cleanup only affects the clipboard
-//!   copy, falling back to verbatim when cleanup empties it (STATE-3)
+//! - the verbatim text is always logged; formatting (format.rs: cleanup,
+//!   spoken commands, style, corrections, snippets) only affects the
+//!   delivered copy, and an all-filler take is delivered as said (STATE-3);
+//!   a take spoken commands delete entirely ("scratch that") is logged but
+//!   never copied
 //! - pill states, cues, and panel pushes mirror the original exactly
 //!   (done pill hides after 1.1 s, error pills after 2 s)
 //!
@@ -28,6 +31,7 @@ use crate::audio::{self, Recording, Take};
 use crate::clipboard;
 use crate::config::ConfigStore;
 use crate::cues;
+use crate::format;
 use crate::gpu::{GpuWorker, READY_TIMEOUT_CACHED, READY_TIMEOUT_DOWNLOAD};
 use crate::hw;
 use crate::power;
@@ -1156,6 +1160,8 @@ fn stop_recording(app: &AppHandle, ctx: &AppCtx, paste: bool) {
 
 enum Outcome {
     Done,
+    /// Logged verbatim, but spoken commands left nothing to deliver.
+    Scratched,
     Empty,
     Error,
     Model,
@@ -1280,14 +1286,18 @@ fn transcribe_worker(app: AppHandle, take: Take, secs: f64, mic: String, session
         // pill, tray and exit path included).
         let _serial = lock(&ctx.xscribe);
         let audio16 = audio::resample_to_16k(&take.samples, take.rate);
-        let (cleanup_mode, vocab) = {
+        let (mut format_opts, vocab, language) = {
             let cfg = lock(&ctx.cfg);
             (
-                cfg.get("clipboard_cleanup"),
+                format::FormatOptions::from_config(&cfg),
                 transcribe::get_vocab_prompt(&app_dir(), &cfg),
+                cfg.get("language"),
             )
         };
-        let corrections = crate::vocab::read_corrections(&app_dir());
+        format_opts.corrections = crate::vocab::read_corrections(&app_dir());
+        format_opts.snippets = crate::vocab::read_snippets(&app_dir());
+        // Resolved per serving model: English-only models always run "en".
+        let lang_for = |model: &str| transcribe::whisper_language(&language, model);
         /// What serves this take, cloned out of the engine under a short
         /// lock; the transcription runs on the Arcs with the lock released.
         enum Serving {
@@ -1313,18 +1323,20 @@ fn transcribe_worker(app: AppHandle, take: Take, secs: f64, mic: String, session
                 eprintln!("transcribe skipped: model not ready");
                 return Outcome::Model;
             }
-            Serving::Cpu(Some(t)) => match t.transcribe(&audio16, 1, vocab.as_deref()) {
-                Ok(text) => (text, "cpu".to_string()),
-                Err(e) => {
-                    eprintln!("transcribe failed: {e}");
-                    return Outcome::Error;
+            Serving::Cpu(Some(t)) => {
+                match t.transcribe(&audio16, 1, vocab.as_deref(), &lang_for(&model_name)) {
+                    Ok(text) => (text, "cpu".to_string()),
+                    Err(e) => {
+                        eprintln!("transcribe failed: {e}");
+                        return Outcome::Error;
+                    }
                 }
-            },
+            }
             Serving::Gpu(gpu) => {
                 let result = gpu
                     .as_deref()
                     .ok_or_else(|| "GPU worker already gone".to_string())
-                    .and_then(|w| w.transcribe(&audio16, 5, vocab.as_deref()));
+                    .and_then(|w| w.transcribe(&audio16, 5, vocab.as_deref(), &lang_for(&w.model)));
                 match result {
                     Ok(text) => (text, "gpu".to_string()),
                     Err(e) => {
@@ -1376,7 +1388,12 @@ fn transcribe_worker(app: AppHandle, take: Take, secs: f64, mic: String, session
                                     return Outcome::Error;
                                 }
                                 Some(Retry::Cpu(t)) => {
-                                    match t.transcribe(&audio16, 1, vocab.as_deref()) {
+                                    match t.transcribe(
+                                        &audio16,
+                                        1,
+                                        vocab.as_deref(),
+                                        &lang_for(&model_name),
+                                    ) {
                                         Ok(text) => break (text, "cpu".to_string()),
                                         Err(e) => {
                                             eprintln!("transcribe failed: {e}");
@@ -1385,7 +1402,12 @@ fn transcribe_worker(app: AppHandle, take: Take, secs: f64, mic: String, session
                                     }
                                 }
                                 Some(Retry::Gpu(w)) => {
-                                    match w.transcribe(&audio16, 5, vocab.as_deref()) {
+                                    match w.transcribe(
+                                        &audio16,
+                                        5,
+                                        vocab.as_deref(),
+                                        &lang_for(&w.model),
+                                    ) {
                                         Ok(text) => break (text, "gpu".to_string()),
                                         Err(e) => {
                                             // One GPU retry per take; the
@@ -1416,18 +1438,24 @@ fn transcribe_worker(app: AppHandle, take: Take, secs: f64, mic: String, session
         if verbatim.is_empty() {
             return Outcome::Empty;
         }
-        // STATE-3: never copy "" — all-fillers falls back to verbatim.
-        // Vocabulary corrections apply to the clipboard/clean layer only;
-        // the verbatim transcript below is logged unchanged.
-        let text = crate::vocab::apply_corrections(
-            &clipboard::clipboard_text(&verbatim, &cleanup_mode),
-            &corrections,
-        );
-        if let Err(e) = clipboard::copy(&text) {
-            eprintln!("clipboard copy failed: {e}");
-            return Outcome::CopyFail;
+        // The delivered copy (format.rs): cleanup, spoken commands, style,
+        // corrections, snippets. STATE-3 lives inside format_text (an
+        // all-filler take comes back as said); the verbatim transcript
+        // below is logged unchanged either way.
+        let text = format::format_text(&verbatim, &format_opts);
+        // "" here means spoken commands deleted the whole take ("scratch
+        // that"): the take is still logged verbatim, but nothing is copied
+        // or pasted — the clipboard keeps whatever it held.
+        let scratched = text.is_empty();
+        if scratched {
+            eprintln!("take scratched by a spoken command; nothing copied");
+        } else {
+            if let Err(e) = clipboard::copy(&text) {
+                eprintln!("clipboard copy failed: {e}");
+                return Outcome::CopyFail;
+            }
+            clean = Some(text.clone());
         }
-        clean = Some(text.clone());
         let cfg = lock(&ctx.cfg);
         let model_for_log = if model_name.is_empty() {
             cfg.get("model")
@@ -1444,7 +1472,11 @@ fn transcribe_worker(app: AppHandle, take: Take, secs: f64, mic: String, session
                 eprintln!("log write failed (unexpected): {e}");
             }
         }
-        Outcome::Done
+        if scratched {
+            Outcome::Scratched
+        } else {
+            Outcome::Done
+        }
     });
     let outcome = std::panic::catch_unwind(worker).unwrap_or_else(|_| {
         eprintln!("transcribe worker panicked; treating as transcription error");
@@ -1511,6 +1543,22 @@ fn finish(
         }
         show_pill(app, ctx, "done", None);
         arm_pill_hide(app, ctx, 1100);
+        return;
+    }
+
+    if let Outcome::Scratched = outcome {
+        // the panel still shows the (verbatim) take; the pill just leaves
+        // with the cancel cue — nothing was copied or pasted
+        {
+            let cfg = lock(&ctx.cfg);
+            if let Some(rec) = &rec {
+                push_panel(app, "tiroAddEntry", store::entry_from_rec(rec, &cfg));
+            }
+        }
+        if !stale {
+            play(ctx, "cancel");
+            hide_pill(app, ctx);
+        }
         return;
     }
 
